@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS classifications (
     action     TEXT,
     method     TEXT,                  -- recycle | command | manual | none
     command    TEXT,
+    admin      INTEGER NOT NULL DEFAULT 0,
+    excl_bytes INTEGER NOT NULL DEFAULT 0,  -- allocated minus nested roots: sum these for totals
     created_at TEXT NOT NULL,
     PRIMARY KEY (scan_id, node_id)
 );
@@ -122,7 +124,22 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     con.execute("PRAGMA temp_store=MEMORY")
     con.execute("PRAGMA cache_size=-200000")  # ~200 MB
     con.executescript(SCHEMA)
+    _migrate(con)
     return con
+
+
+# Columns added after the first release: (table, column, declaration). ALTER TABLE ADD COLUMN is cheap.
+_ADDED_COLUMNS = [
+    ("classifications", "admin", "INTEGER NOT NULL DEFAULT 0"),
+    ("classifications", "excl_bytes", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    for table, col, decl in _ADDED_COLUMNS:
+        have = {r["name"] for r in con.execute(f"PRAGMA table_info({table})")}
+        if col not in have:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 @contextmanager

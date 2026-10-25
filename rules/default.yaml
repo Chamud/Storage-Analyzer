@@ -1,0 +1,571 @@
+# Built-in rules. Add your own in rules/user.yaml (same format; user rules win over these).
+# Format: docs/RULES.md. Path globs: `*` one segment, `**` any depth, `?:` any drive, `~` any user profile,
+# %LOCALAPPDATA% %APPDATA% %TEMP% %PROGRAMDATA%.  Rules are tried top-down; `priority` (higher first)
+# breaks the order when needed. `override: true` lets a rule apply inside a `keep` subtree.
+
+categories:
+  temp:      { name: "Temp & leftovers",        desc: "Temp folders, crash dumps, logs, Recycle Bin" }
+  appcache:  { name: "App caches & data",       desc: "Browsers, editors, Electron apps, shader caches" }
+  pkg:       { name: "Package caches",          desc: "pip, uv, npm, Gradle, NuGet, Maven, Cargo" }
+  dev:       { name: "Project build folders",   desc: "venvs, node_modules, build output, Unity Library" }
+  projects:  { name: "Projects (source)",       desc: "Your code; keep, and push it" }
+  ml:        { name: "AI models",               desc: "Ollama, Hugging Face, torch hub, LM Studio" }
+  devtools:  { name: "Dev tools & SDKs",        desc: "Unity editors, Unreal Engine, Android SDK, JDKs" }
+  vm:        { name: "Containers & VMs",        desc: "Docker, WSL disks, VM images" }
+  downloads: { name: "Downloads & installers",  desc: "exe, msi, zip, iso" }
+  games:     { name: "Games & launchers",       desc: "Steam, Epic" }
+  apps:      { name: "Installed programs",      desc: "Uninstall through Settings, never by deleting" }
+  media:     { name: "Media",                   desc: "Videos, photos, renders" }
+  system:    { name: "Windows system",          desc: "Page file, hibernation, WinSxS, restore points" }
+  personal:  { name: "Personal files",          desc: "Documents, pictures, desktop, OneDrive" }
+  unknown:   { name: "Unknown",                 desc: "No rule matched yet" }
+
+# Folders whose children are checked for project marker files (depth up to 3).
+project_roots:
+  - "D:\\Projects"
+  - "~\\source\\repos"
+  - "~\\Projects"
+  - "~\\projects"
+  - "~\\dev"
+  - "~\\code"
+  - "~\\repos"
+  - "~\\UnityProjects"
+  - "~\\AndroidStudioProjects"
+  - "~\\PycharmProjects"
+  - "~\\IdeaProjects"
+  - "~\\Documents\\GitHub"
+  - "~\\Documents\\Unreal Projects"
+
+# Files/folders that mark a project root → project type.
+project_markers:
+  python:  ["pyproject.toml", "requirements.txt", "setup.py", "Pipfile", "environment.yml"]
+  node:    ["package.json"]
+  rust:    ["Cargo.toml"]
+  go:      ["go.mod"]
+  dotnet:  ["*.sln", "*.csproj", "*.fsproj"]
+  java:    ["build.gradle", "build.gradle.kts", "pom.xml", "settings.gradle", "settings.gradle.kts"]
+  unity:   ["ProjectSettings/ProjectVersion.txt"]
+  unreal:  ["*.uproject"]
+  cmake:   ["CMakeLists.txt"]
+  git:     [".git"]
+
+rules:
+  # ---------------------------------------------------------------- structure: look inside these
+  - { id: root,            match: { path: "?:\\" },                         category: system, safety: container }
+  - { id: users,           match: { path: "?:\\Users" },                    category: personal, safety: container }
+  - { id: public,          match: { path: "?:\\Users\\Public" },            category: personal, safety: keep,
+      reason: "Shared user folder.", action: "Leave as is", method: none }
+  - { id: home,            match: { path: "~" },                            category: personal, safety: container }
+  - { id: appdata,         match: { path: ["~\\AppData", "~\\AppData\\Local", "~\\AppData\\Roaming", "~\\AppData\\LocalLow"] },
+      category: appcache, safety: container }
+  - { id: programdata,     match: { path: "?:\\ProgramData" },              category: apps, safety: container }
+  - { id: programfiles,    match: { path: ["?:\\Program Files", "?:\\Program Files (x86)"] }, category: apps, safety: container }
+
+  # ---------------------------------------------------------------- Windows system
+  - id: hiberfil
+    match: { path: "?:\\hiberfil.sys" }
+    category: system
+    safety: safe
+    reason: "Hibernation file. Only needed for Hibernate / Fast Startup; Sleep keeps working without it."
+    action: "Turn hibernation off"
+    method: command
+    command: "powercfg /h off"
+    admin: true
+  - id: pagefile
+    match: { path: ["?:\\pagefile.sys", "?:\\swapfile.sys"] }
+    category: system
+    safety: keep
+    reason: "Virtual memory used by Windows."
+    action: "Leave as is (size is set in System > Advanced > Performance)"
+    method: none
+  - id: sysvol
+    match: { path: "?:\\System Volume Information" }
+    category: system
+    safety: review
+    reason: "System Restore points and volume shadow copies."
+    action: "Limit their size in System Protection, or delete old restore points there"
+    method: manual
+    command: "SystemPropertiesProtection.exe"
+  - id: recyclebin
+    match: { path: ["?:\\$Recycle.Bin", "?:\\$RECYCLE.BIN"] }
+    category: temp
+    safety: safe
+    reason: "Files you already deleted. Emptying frees the space for good."
+    action: "Empty the Recycle Bin"
+    method: command
+    command: "Clear-RecycleBin -Force"
+  - id: ntfs-meta
+    match: { path: ["?:\\$*", "?:\\Recovery", "?:\\Config.Msi", "?:\\PerfLogs", "?:\\Documents and Settings", "?:\\DumpStack.log.tmp", "?:\\bootmgr", "?:\\BOOTNXT"] }
+    category: system
+    safety: keep
+    reason: "NTFS / boot metadata."
+    action: "Leave as is"
+    method: none
+  - id: windows
+    match: { path: "?:\\Windows" }
+    category: system
+    safety: keep
+    reason: "Windows itself. Deleting by hand breaks the OS or Windows Update."
+    action: "Use Disk Cleanup / Storage Sense, or DISM /Online /Cleanup-Image /StartComponentCleanup for WinSxS"
+    method: none
+  - id: win-temp
+    match: { path: ["?:\\Windows\\Temp", "?:\\Windows\\Logs\\CBS", "?:\\Windows\\Logs\\DISM", "?:\\Windows\\Panther", "?:\\Windows\\SoftwareDistribution\\Download", "?:\\Windows\\Prefetch\\*.tmp"] }
+    override: true
+    category: temp
+    safety: safe
+    reason: "Windows temp / update download / setup leftovers. Rebuilt when needed."
+    action: "Delete (needs admin)"
+    admin: true
+  - id: win-dumps
+    match: { path: ["?:\\Windows\\LiveKernelReports", "?:\\Windows\\Minidump", "?:\\Windows\\MEMORY.DMP", "?:\\Windows\\LiveKernelReports\\**\\*.dmp"] }
+    override: true
+    category: temp
+    safety: safe
+    reason: "Kernel crash dumps from past driver crashes. Only useful while debugging a crash."
+    action: "Delete (needs admin)"
+    admin: true
+  - id: win-old
+    match: { path: ["?:\\Windows.old", "?:\\$WINDOWS.~BT", "?:\\$WINDOWS.~WS", "?:\\$GetCurrent"] }
+    priority: 10
+    category: system
+    safety: safe
+    reason: "Previous Windows installation / upgrade leftovers. Safe once you are happy with the current version."
+    action: "Remove with Disk Cleanup > 'Previous Windows installation(s)' (needs admin)"
+    method: manual
+    command: "cleanmgr.exe"
+    admin: true
+  - id: winsxs
+    match: { path: "?:\\Windows\\WinSxS" }
+    override: true
+    category: system
+    safety: keep
+    reason: "Windows component store. Never delete by hand."
+    action: "DISM /Online /Cleanup-Image /StartComponentCleanup (safe, needs admin)"
+    method: command
+    command: "DISM /Online /Cleanup-Image /StartComponentCleanup"
+    admin: true
+  - id: windowsapps
+    match: { path: "?:\\Program Files\\WindowsApps" }
+    category: apps
+    safety: keep
+    reason: "Microsoft Store apps."
+    action: "Uninstall apps in Settings > Apps"
+    method: none
+
+  # ---------------------------------------------------------------- installed programs
+  - id: unity-editors
+    match: { path: "?:\\Program Files\\Unity\\Hub\\Editor\\*" }
+    priority: 5
+    override: true
+    category: devtools
+    safety: review
+    reason: "A Unity Editor version. Projects list which version they use; old ones can be removed."
+    action: "Uninstall unused versions in Unity Hub > Installs"
+    method: manual
+  - id: unreal-engine
+    match: { path: ["**\\Epic Games\\UE_*", "**\\Epic Games\\UE_*\\**\\DerivedDataCache"] }
+    priority: 5
+    override: true
+    category: devtools
+    safety: review
+    reason: "An Unreal Engine version (~30 GB each). Keep only the versions your projects use."
+    action: "Remove via Epic Games Launcher > Unreal Engine > Library"
+    method: manual
+  - id: steam-shadercache
+    match: { path: ["**\\Steam\\steamapps\\shadercache", "**\\Steam\\steamapps\\downloading", "**\\Steam\\steamapps\\temp"] }
+    priority: 6
+    override: true
+    category: games
+    safety: safe
+    reason: "Steam shader cache / interrupted downloads. Rebuilt automatically."
+    action: "Delete (Steam closed)"
+  - id: steam-game
+    match: { path: "**\\Steam\\steamapps\\common\\*" }
+    priority: 5
+    override: true
+    category: games
+    safety: review
+    reason: "An installed Steam game. Re-downloadable; saves are usually in Steam Cloud."
+    action: "Uninstall via Steam > Library (right-click > Manage > Uninstall)"
+    method: manual
+  - id: steam-workshop
+    match: { path: "**\\Steam\\steamapps\\workshop" }
+    priority: 5
+    override: true
+    category: games
+    safety: review
+    reason: "Workshop mods. Re-downloadable."
+    action: "Unsubscribe in Steam Workshop, or delete (Steam closed)"
+  - id: epic-launcher
+    match: { path: "**\\Epic Games\\Launcher" }
+    priority: 6
+    override: true
+    category: apps
+    safety: keep
+    reason: "The Epic Games Launcher itself."
+    action: "Uninstall in Settings > Apps if you no longer use Epic"
+    method: none
+  - id: epic-game
+    match: { path: "**\\Epic Games\\*" }
+    priority: 4
+    override: true
+    category: games
+    safety: review
+    reason: "An Epic Games install. Re-downloadable."
+    action: "Uninstall via Epic Games Launcher"
+    method: manual
+  - id: epic-launcher-data
+    match: { path: "%PROGRAMDATA%\\Epic" }
+    category: games
+    safety: review
+    reason: "Epic launcher data: manifests, downloaded prerequisites and caches."
+    action: "Clear in Epic launcher settings, or delete the EpicGamesLauncher\\Saved\\webcache folders"
+    method: manual
+  - id: package-cache
+    match: { path: ["%PROGRAMDATA%\\Package Cache", "%LOCALAPPDATA%\\Package Cache"] }
+    category: apps
+    safety: review
+    reason: "Installer cache used to repair/uninstall Visual Studio, .NET and other MSI apps. Deleting breaks repair."
+    action: "Leave as is unless desperate"
+    method: none
+  - id: programfiles-app
+    match: { path: ["?:\\Program Files\\*", "?:\\Program Files (x86)\\*", "%LOCALAPPDATA%\\Programs\\*", "%PROGRAMDATA%\\Microsoft", "%LOCALAPPDATA%\\Packages", "%LOCALAPPDATA%\\Microsoft"] }
+    category: apps
+    safety: keep
+    reason: "An installed program. Deleting the folder leaves a broken install."
+    action: "Uninstall in Settings > Apps if you no longer need it"
+    method: none
+  - id: programs-container
+    match: { path: "%LOCALAPPDATA%\\Programs" }
+    category: apps
+    safety: container
+
+  # ---------------------------------------------------------------- temp & caches (user)
+  - id: user-temp
+    match: { path: ["%TEMP%", "~\\AppData\\LocalLow\\Temp", "?:\\Temp", "?:\\tmp"] }
+    category: temp
+    safety: safe
+    reason: "Temporary files from installers and apps. Files in use are skipped automatically."
+    action: "Delete to Recycle Bin"
+  - id: crashdumps
+    match: { path: ["%LOCALAPPDATA%\\CrashDumps", "%LOCALAPPDATA%\\D3DSCache", "%LOCALAPPDATA%\\Microsoft\\Windows\\WER", "%PROGRAMDATA%\\Microsoft\\Windows\\WER"] }
+    override: true
+    category: temp
+    safety: safe
+    reason: "Crash dumps and error reports."
+    action: "Delete to Recycle Bin"
+  - id: explorer-thumbs
+    match: { path: ["%LOCALAPPDATA%\\Microsoft\\Windows\\Explorer\\thumbcache_*.db", "%LOCALAPPDATA%\\Microsoft\\Windows\\INetCache", "%LOCALAPPDATA%\\Microsoft\\Windows\\WebCache"] }
+    override: true
+    category: temp
+    safety: safe
+    reason: "Explorer thumbnail / web caches. Rebuilt automatically."
+    action: "Delete (Explorer may hold them; use Disk Cleanup if locked)"
+  - id: nvidia-caches
+    match: { path: ["%LOCALAPPDATA%\\NVIDIA\\DXCache", "%LOCALAPPDATA%\\NVIDIA\\GLCache", "%LOCALAPPDATA%\\NVIDIA\\NV_Cache", "%LOCALAPPDATA%\\NVIDIA Corporation\\NV_Cache", "%LOCALAPPDATA%\\AMD\\DxCache", "%LOCALAPPDATA%\\AMD\\GLCache", "%LOCALAPPDATA%\\Intel\\ShaderCache"] }
+    category: appcache
+    safety: safe
+    reason: "GPU shader caches. Games recompile shaders on first launch after clearing."
+    action: "Delete to Recycle Bin"
+  - id: nvidia-container
+    match: { path: ["%LOCALAPPDATA%\\NVIDIA", "%LOCALAPPDATA%\\NVIDIA Corporation", "%LOCALAPPDATA%\\AMD", "%LOCALAPPDATA%\\Google", "%LOCALAPPDATA%\\BraveSoftware", "%LOCALAPPDATA%\\Microsoft\\Edge", "%LOCALAPPDATA%\\Mozilla"] }
+    category: appcache
+    safety: container
+  - id: browser-profile
+    match: { path: ["%LOCALAPPDATA%\\Google\\Chrome\\User Data", "%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data", "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data", "%APPDATA%\\Mozilla\\Firefox\\Profiles"] }
+    override: true
+    category: appcache
+    safety: keep
+    reason: "Browser profile: bookmarks, passwords, history, extensions. Only the Cache folders inside are safe."
+    action: "Clear cache from the browser, or tick the Cache folders below"
+    method: none
+  - id: generic-app-cache
+    match:
+      name: ["Cache", "Cache2", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",
+             "ShaderCache", "CachedData", "CachedExtensionVSIXs", "CacheStorage", "Crashpad", "logs", "Logs",
+             "blob_storage", "Service Worker", "IndexedDB-journal", "WebStorage-journal", "CachedProfiles",
+             "GrShaderCache", "GraphiteDawnCache", "Cache_Data", "Media Cache", "ScriptCache", "Code_Cache"]
+      under: ["~\\AppData", "~\\.cache", "~\\.config", "%PROGRAMDATA%"]
+      is_dir: true
+      min_bytes: 10485760
+    priority: -1          # generic: every specific rule wins over it
+    override: true
+    category: appcache
+    safety: safe
+    reason: "An application cache. Rebuilt by the app; close the app first so files are not locked."
+    action: "Delete to Recycle Bin (app closed)"
+  - id: capcut-cache
+    match: { path: ["%LOCALAPPDATA%\\CapCut\\User Data\\Cache", "%LOCALAPPDATA%\\CapCut\\User Data\\Cache\\**", "%LOCALAPPDATA%\\CapCut\\Apps\\*\\Cache"] }
+    priority: 2
+    category: appcache
+    safety: safe
+    reason: "CapCut render/proxy cache. Rebuilt when you reopen a project."
+    action: "Clear in CapCut > Settings > Cache, or delete (CapCut closed)"
+  - id: capcut-drafts
+    match: { path: "%LOCALAPPDATA%\\CapCut\\User Data\\Projects" }
+    priority: 2
+    category: personal
+    safety: keep
+    reason: "CapCut project drafts: your edits. Not recoverable."
+    action: "Delete finished projects inside CapCut"
+    method: none
+  - id: playwright-browsers
+    match: { path: "%LOCALAPPDATA%\\ms-playwright" }
+    category: pkg
+    safety: safe
+    reason: "Browsers downloaded by Playwright. Re-downloaded with `playwright install`."
+    action: "Delete to Recycle Bin"
+  - id: electron-updater
+    match: { path: ["%LOCALAPPDATA%\\*-updater", "%LOCALAPPDATA%\\SquirrelTemp", "%LOCALAPPDATA%\\*\\pending", "%LOCALAPPDATA%\\Discord\\app-*\\..\\packages"] }
+    category: temp
+    safety: safe
+    reason: "Auto-updater leftovers."
+    action: "Delete to Recycle Bin"
+
+  # ---------------------------------------------------------------- package manager caches
+  - id: pip-cache
+    match: { path: ["%LOCALAPPDATA%\\pip\\cache", "%LOCALAPPDATA%\\pip"] }
+    category: pkg
+    safety: safe
+    reason: "Downloaded Python wheels. pip downloads them again when needed."
+    action: "pip cache purge"
+    method: command
+    command: "pip cache purge"
+  - id: uv-cache
+    match: { path: ["%LOCALAPPDATA%\\uv\\cache", "%LOCALAPPDATA%\\uv"] }
+    category: pkg
+    safety: safe
+    reason: "uv package cache. Re-fetched on the next `uv sync`."
+    action: "uv cache clean"
+    method: command
+    command: "uv cache clean"
+  - id: npm-cache
+    match: { path: ["%LOCALAPPDATA%\\npm-cache", "%APPDATA%\\npm-cache", "%LOCALAPPDATA%\\Yarn\\Cache", "%LOCALAPPDATA%\\pnpm\\store", "%LOCALAPPDATA%\\pnpm-cache", "%LOCALAPPDATA%\\Yarn"] }
+    category: pkg
+    safety: safe
+    reason: "npm / yarn / pnpm download cache. Re-fetched on the next install."
+    action: "npm cache clean --force"
+    method: command
+    command: "npm cache clean --force"
+  - id: gradle-caches
+    match: { path: ["~\\.gradle\\caches", "~\\.gradle\\daemon", "~\\.gradle\\native", "~\\.gradle\\kotlin"] }
+    category: pkg
+    safety: safe
+    reason: "Gradle dependency and build caches. Re-downloaded on the next build (slow first build)."
+    action: "Delete to Recycle Bin (no Gradle build running)"
+  - id: gradle-wrapper
+    match: { path: "~\\.gradle\\wrapper" }
+    category: pkg
+    safety: review
+    reason: "Downloaded Gradle distributions, one per version your projects use."
+    action: "Delete versions no project uses"
+  - id: gradle-container
+    match: { path: ["~\\.gradle", "~\\.cache", "~\\.nuget", "~\\.m2", "~\\.cargo", "~\\.local", "~\\.local\\share"] }
+    category: pkg
+    safety: container
+  - id: nuget-cache
+    match: { path: ["~\\.nuget\\packages", "%LOCALAPPDATA%\\NuGet", "~\\.nuget\\v3-cache", "~\\.m2\\repository", "~\\.cargo\\registry", "~\\.cargo\\git"] }
+    category: pkg
+    safety: safe
+    reason: "NuGet / Maven / Cargo package cache. Restored on the next build."
+    action: "Delete to Recycle Bin"
+  - id: hf-cache
+    match: { path: ["~\\.cache\\huggingface", "~\\.cache\\huggingface\\hub", "%LOCALAPPDATA%\\huggingface", "~\\.cache\\torch", "~\\.cache\\whisper", "~\\.cache\\clip", "~\\.cache\\modelscope"] }
+    priority: 3
+    category: ml
+    safety: review
+    reason: "Downloaded model weights. Re-downloadable, but large and slow to fetch again."
+    action: "huggingface-cli delete-cache (interactive), or delete models you no longer use"
+    method: manual
+  - id: dotcache-generic
+    match: { path: "~\\.cache\\*" }
+    category: pkg
+    safety: safe
+    reason: "A tool cache under ~/.cache. Rebuilt when needed."
+    action: "Delete to Recycle Bin"
+  - id: ollama-models
+    match: { path: ["~\\.ollama\\models", "%LOCALAPPDATA%\\Ollama", "~\\.lmstudio\\models", "~\\.cache\\lm-studio\\models", "%LOCALAPPDATA%\\nomic.ai", "~\\.ollama"] }
+    priority: 3
+    category: ml
+    safety: review
+    reason: "Local LLM weights. Re-downloadable with `ollama pull` / LM Studio."
+    action: "ollama list, then ollama rm <model> for ones you no longer use"
+    method: manual
+  - id: model-files
+    match: { ext: [".gguf", ".safetensors", ".ckpt", ".pth", ".onnx", ".bin"], min_bytes: 524288000, is_dir: false }
+    category: ml
+    safety: review
+    reason: "A large model weights file."
+    action: "Delete if you can download or regenerate it"
+  - id: jdks
+    match: { path: ["~\\.jdks", "%LOCALAPPDATA%\\Android", "%LOCALAPPDATA%\\Android\\Sdk", "~\\AppData\\Local\\Unity", "%LOCALAPPDATA%\\unity3d", "%LOCALAPPDATA%\\UnrealEngine", "%LOCALAPPDATA%\\Unity Hub", "%LOCALAPPDATA%\\UnityHub"] }
+    category: devtools
+    safety: review
+    reason: "SDKs, JDKs or engine data managed by an IDE/hub."
+    action: "Remove unused versions from the IDE's SDK manager / hub"
+    method: manual
+  - id: unity-cache
+    match: { path: ["%LOCALAPPDATA%\\Unity\\cache", "%LOCALAPPDATA%\\Unity\\cache\\**", "%LOCALAPPDATA%\\UnrealEngine\\Common\\DerivedDataCache", "%LOCALAPPDATA%\\UnrealEngine\\*\\DerivedDataCache", "%LOCALAPPDATA%\\unity3d\\*\\Cache*"] }
+    priority: 2
+    category: appcache
+    safety: safe
+    reason: "Engine package / derived-data cache. Rebuilt on next use."
+    action: "Delete (editor closed)"
+
+  # ---------------------------------------------------------------- containers & VMs
+  - id: docker-disk
+    match: { path: ["%LOCALAPPDATA%\\Docker", "%LOCALAPPDATA%\\Docker\\wsl", "%LOCALAPPDATA%\\Docker\\wsl\\**\\*.vhdx", "%PROGRAMDATA%\\DockerDesktop"] }
+    category: vm
+    safety: review
+    reason: "Docker Desktop disk image. Never delete the file; prune unused images and compact instead."
+    action: "docker system prune -a, then compact the vhdx (wsl --shutdown; Optimize-VHD or diskpart compact)"
+    method: command
+    command: "docker system prune -a --volumes"
+  - id: wsl-disk
+    match: { path: ["%LOCALAPPDATA%\\wsl", "%LOCALAPPDATA%\\Packages\\*Ubuntu*", "%LOCALAPPDATA%\\Packages\\*Debian*", "**\\ext4.vhdx"] }
+    priority: 2
+    override: true
+    category: vm
+    safety: review
+    reason: "A WSL distro disk. Grows but never shrinks on its own."
+    action: "Clean inside the distro, then: wsl --shutdown; wsl --manage <distro> --set-sparse true"
+    method: manual
+  - id: vm-images
+    match: { ext: [".vhd", ".vhdx", ".vmdk", ".vdi", ".qcow2", ".ova"], min_bytes: 1073741824, is_dir: false }
+    category: vm
+    safety: review
+    reason: "A virtual machine disk image."
+    action: "Delete only if the VM is gone; otherwise compact it"
+
+  # ---------------------------------------------------------------- downloads
+  - id: downloads
+    match: { path: "~\\Downloads" }
+    category: downloads
+    safety: container
+  - id: downloads-installers
+    match: { ext: [".exe", ".msi", ".msix", ".appx", ".appxbundle", ".dmg", ".pkg"], under: "~\\Downloads", is_dir: false, min_bytes: 1048576 }
+    category: downloads
+    safety: review
+    reason: "An installer. Usually safe once the program is installed (you can download it again)."
+    action: "Delete to Recycle Bin"
+  - id: downloads-archives
+    match: { ext: [".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".xz", ".bz2"], under: "~\\Downloads", is_dir: false, min_bytes: 1048576 }
+    category: downloads
+    safety: review
+    reason: "An archive. If you already extracted or installed it, the archive is a leftover."
+    action: "Delete to Recycle Bin"
+  - id: downloads-iso
+    match: { ext: [".iso", ".img", ".wim", ".esd"], is_dir: false, min_bytes: 104857600 }
+    category: downloads
+    safety: review
+    reason: "A disk image (OS installer or similar). Re-downloadable from the vendor."
+    action: "Delete to Recycle Bin"
+  - id: downloads-other-big
+    match: { under: "~\\Downloads", is_dir: false, min_bytes: 104857600 }
+    category: downloads
+    safety: review
+    reason: "A large downloaded file."
+    action: "Check it, then delete or move it"
+
+  # ---------------------------------------------------------------- personal (never auto)
+  - id: personal
+    match: { path: ["~\\Documents", "~\\Pictures", "~\\Desktop", "~\\Music", "~\\OneDrive", "~\\OneDrive - *", "~\\Dropbox", "~\\Google Drive", "~\\iCloudDrive", "~\\Contacts", "~\\Favorites", "~\\Saved Games", "~\\.ssh", "~\\.gnupg", "~\\.claude", "~\\.cursor", "~\\.config", "~\\.vscode", "%APPDATA%\\Microsoft", "%LOCALAPPDATA%\\Microsoft\\Outlook"] }
+    category: personal
+    safety: keep
+    reason: "Your own files or settings. Cannot be recovered after deletion."
+    action: "Leave as is"
+    method: none
+  - id: videos
+    match: { path: ["~\\Videos", "~\\Videos\\Captures", "?:\\Media", "?:\\Videos"] }
+    category: media
+    safety: review
+    reason: "Videos / captures. Large but personal: review before deleting."
+    action: "Move to external storage or delete what you don't need"
+    method: manual
+  - id: media-files
+    match: { ext: [".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm", ".insv", ".insp", ".mxf", ".braw", ".r3d"], is_dir: false, min_bytes: 524288000 }
+    category: media
+    safety: review
+    reason: "A large video file."
+    action: "Move to external storage or delete"
+    method: manual
+
+  # ---------------------------------------------------------------- dev: rebuildable folders (only inside detected projects)
+  - id: dev-node-modules
+    match: { name: ["node_modules", ".pnpm-store"], is_dir: true, in_project: true }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Node packages. Recreate with npm install / pnpm install."
+    action: "Delete to Recycle Bin"
+  - id: dev-venv
+    match: { name: [".venv", "venv", ".tox", ".nox", ".conda", "conda-env"], is_dir: true, in_project: true }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Python virtual environment. Recreate with uv sync / pip install -r requirements.txt."
+    action: "Delete to Recycle Bin"
+  - id: dev-pycache
+    match: { name: ["__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".hypothesis", "*.egg-info"], is_dir: true, in_project: true }
+    override: true
+    category: dev
+    safety: safe
+    reason: "Python bytecode / tool cache. Recreated automatically."
+    action: "Delete to Recycle Bin"
+  - id: dev-build
+    match: { name: ["build", "dist", "out", ".next", ".nuxt", ".turbo", ".parcel-cache", ".cache", "target", "cmake-build-*", ".gradle", ".angular", "coverage", ".nyc_output", "storybook-static", ".webpack", ".svelte-kit", ".output", ".dart_tool"], is_dir: true, in_project: true }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Build output / IDE cache. Recreated on the next build."
+    action: "Delete to Recycle Bin"
+  - id: dev-dotnet
+    match: { name: ["bin", "obj", "Debug", "Release", "x64", ".vs", "TestResults"], is_dir: true, in_project: true, project_types: [dotnet, cmake, unreal] }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Compiler output / IDE cache. Recreated on the next build."
+    action: "Delete to Recycle Bin"
+  - id: dev-unity
+    match: { name: ["Library", "Temp", "Logs", "obj", "Build", "Builds", "UserSettings", "MemoryCaptures", "Recordings"], is_dir: true, in_project: true, project_types: [unity] }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Unity Library / Temp / build output. Reimported on next open (first open is slow)."
+    action: "Delete to Recycle Bin (project closed in Unity)"
+  - id: dev-unreal
+    match: { name: ["Intermediate", "DerivedDataCache", "Binaries"], is_dir: true, in_project: true, project_types: [unreal] }
+    override: true
+    category: dev
+    safety: rebuildable
+    reason: "Unreal Intermediate / DDC / Binaries. Regenerated on the next build."
+    action: "Delete to Recycle Bin (project closed in the editor)"
+  - id: dev-unreal-saved
+    match: { name: "Saved", is_dir: true, in_project: true, project_types: [unreal] }
+    override: true
+    category: dev
+    safety: review
+    reason: "Unreal Saved folder: autosaves, logs, crash reports, but also Config overrides."
+    action: "Delete Saved\\Autosaves, Logs and Crashes; keep Config"
+  - id: dev-git
+    match: { name: ".git", is_dir: true }
+    override: true
+    category: projects
+    safety: keep
+    reason: "Git history for this project."
+    action: "Leave as is (run git gc if it is unexpectedly large)"
+    method: none
+  - id: orphan-venv
+    match: { name: ["node_modules", ".venv", "venv", "__pycache__"], is_dir: true, min_bytes: 52428800 }
+    category: dev
+    safety: review
+    reason: "A dependency folder outside any detected project. Probably a leftover."
+    action: "Check the parent folder, then delete"
+
+  # ---------------------------------------------------------------- project roots: look inside these
+  - id: project-roots
+    match: { path: ["D:\\Projects", "D:\\Projects\\*", "~\\source", "~\\source\\repos", "~\\Projects", "~\\dev", "~\\code", "~\\repos", "~\\UnityProjects", "~\\AndroidStudioProjects", "~\\PycharmProjects", "~\\IdeaProjects", "~\\Documents\\GitHub", "~\\Documents\\Unreal Projects"] }
+    priority: 1
+    override: true
+    category: projects
+    safety: container

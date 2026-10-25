@@ -59,6 +59,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/RULES.md](docs/RULES.md)
 
 ## Licensing
 
-This project is MIT. **WizTree is not included**: it is free for personal use only and may not be
-redistributed, so `scripts/get_wiztree.py` fetches it from the official site into the git-ignored
-`tools/` folder. Business use of WizTree needs a licence from Antibody Software.
+**Free for personal and other non-commercial use** under the
+[PolyForm Noncommercial License 1.0.0](LICENSE). **Commercial use requires a paid licence**: see
+[COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) (email chamudgeesara+storage-analyzer@gmail.com, subject
+`[Storage Analyzer licence] <company>`).
+
+**WizTree is not included** and is licensed separately by Antibody Software: free for personal use only,
+and it may not be redistributed, so `scripts/get_wiztree.py` fetches it from the official site into the
+git-ignored `tools/` folder. Business use of WizTree needs its own licence from https://diskanalyzer.com.

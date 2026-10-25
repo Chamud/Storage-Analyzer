@@ -43,6 +43,8 @@ data/              git-ignored: storage.db, exports/*.csv, logs/
 
 ## Rules of the house
 
+- **Licence is PolyForm Noncommercial 1.0.0** (LICENSE) with paid commercial use (COMMERCIAL-LICENSE.md).
+  Do not change it to a permissive licence, and do not copy GPL code into the project.
 - **Never commit `tools/` or `data/`.** WizTree's EULA forbids redistribution; the DB holds the user's
   full file listing.
 - **Only the scan is elevated.** WizTree is launched through one elevated PowerShell (`scanner/wiztree.py`);

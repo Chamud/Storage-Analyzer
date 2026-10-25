@@ -239,6 +239,9 @@ def node_detail(node_id: int):
     c = con.execute("SELECT * FROM classifications WHERE scan_id=? AND node_id=?", (sid, node_id)).fetchone()
     d["own"] = dict(c) if c else None
     d["protected"] = actions.is_protected(con, sid, n["path"])
+    if n["is_dir"]:
+        from ..procs import InUseIndex
+        d["in_use"] = InUseIndex().describe(n["path"])
     ai = con.execute("SELECT * FROM ai_cache WHERE path=?", (n["path"].lower(),)).fetchone()
     d["ai"] = json.loads(ai["response"]) if ai else None
     lo, hi = n["path"] + "\\", n["path"] + "]"

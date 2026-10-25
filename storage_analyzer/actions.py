@@ -81,9 +81,11 @@ def is_protected(con: sqlite3.Connection, scan_id: int, path: str) -> str | None
     return None
 
 
-def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int]) -> list[Action]:
+def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int], in_use=None) -> list[Action]:
+    from .procs import InUseIndex
     rs = load_rules()
     allowed_cmds = {r.command for r in rs.rules if r.command}
+    in_use = in_use if in_use is not None else InUseIndex()
     out: list[Action] = []
     for nid in node_ids:
         n = con.execute("SELECT * FROM nodes WHERE id=? AND scan_id=?", (nid, scan_id)).fetchone()
@@ -104,6 +106,8 @@ def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int]) -> list[Act
             a.refused = "nothing to do for this item"
         elif a.method == "recycle" and not os.path.exists(n["path"]):
             a.refused = "path no longer exists (rescan)"
+        elif a.method == "recycle" and n["is_dir"] and (busy := in_use.describe(n["path"])):
+            a.refused = busy + "; close it and try again"
         out.append(a)
     return out
 

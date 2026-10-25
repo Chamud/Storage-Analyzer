@@ -237,7 +237,8 @@ def apply(con: sqlite3.Connection, scan_id: int, node: sqlite3.Row, ans: dict) -
 
 
 def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: bool = False, limit: int | None = None,
-        drive: str | None = None, node_ids: list[int] | None = None, cache_only: bool = False, log=print) -> dict:
+        drive: str | None = None, node_ids: list[int] | None = None, cache_only: bool = False, log=print,
+        progress=None) -> dict:
     nodes = pending(con, scan_id, min_bytes=0 if cache_only else 100 * 1024 * 1024, drive=drive, node_ids=node_ids)
     if limit:
         nodes = nodes[:limit]
@@ -260,6 +261,8 @@ def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: b
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
         b = i // BATCH + 1
+        if progress:
+            progress(i, len(todo))
         log(f"  batch {b}/{n_batches}: summarising {len(batch)} items...")
         items = [summarize(con, scan_id, n) for n in batch]
         if dry_run:
@@ -278,4 +281,6 @@ def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: b
             apply(con, scan_id, n, a)
             asked += 1
             log(f"  {a['safety']:6} {a['category']:9} {a['confidence']:.0%}  {n['path']}  — {a['reason']}")
+        if progress:
+            progress(min(i + BATCH, len(todo)), len(todo))
     return {"cached": hits, "asked": asked}

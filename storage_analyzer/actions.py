@@ -65,11 +65,12 @@ def is_protected(con: sqlite3.Connection, scan_id: int, path: str) -> str | None
     if len(p) <= 2:
         return "drive root"
     parts = p.split("\\")
-    if len(parts) == 2 and parts[1].lower() in PROTECTED_DEPTH1:
-        return "top-level system folder"
-    if len(parts) >= 2 and parts[1].lower() in ("windows",) and not _classification_chain(con, scan_id, p):
-        return "inside Windows"
     chain = _classification_chain(con, scan_id, p)
+    own = chain[0] if chain and con.execute("SELECT path FROM nodes WHERE id=?", (chain[0]["node_id"],)).fetchone()["path"].lower() == p.lower() else None
+    # Top-level system folders are off limits unless a rule explicitly handled that exact folder
+    # (e.g. C:\$Recycle.Bin → "Empty the Recycle Bin" command).
+    if len(parts) == 2 and parts[1].lower() in PROTECTED_DEPTH1 and not (own and own["safety"] in ("safe", "review")):
+        return "top-level system folder"
     if not chain:
         # Nothing at or above this path was classified: a container like C:\Users\chamu, or a small
         # folder nobody looked at. The app only cleans what it has classified; use Explorer for the rest.
@@ -111,19 +112,46 @@ def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int]) -> list[Act
 
 def _log(con: sqlite3.Connection, a: Action) -> None:
     con.execute("INSERT INTO cleanup_log(ts,path,bytes,method,command,result,detail) VALUES(?,?,?,?,?,?,?)",
-                (datetime.now().isoformat(timespec="seconds"), a.path, a.bytes, a.method, a.command, a.result, a.detail))
+                (datetime.now().isoformat(timespec="seconds"), a.path, a.bytes, a.method, a.command, a.result,
+                 (a.detail or "")[:2000]))
 
 
-def _recycle_many(paths: list[str]) -> list[tuple[str, str | None]]:
-    """send2trash each path; returns [(path, error_or_None)]."""
+def _recycle_one(path: str) -> str | None:
+    """send2trash a path. If a folder fails (typically a locked file inside), fall back to recycling its
+    children one by one so everything that *can* go, goes. Returns None on full success, else a message."""
     from send2trash import send2trash
+    try:
+        send2trash(path)
+        return None
+    except Exception as ex:  # noqa: BLE001
+        if not os.path.isdir(path):
+            return str(ex)
+    ok = fail = 0
+    first_err = ""
+    try:
+        for name in os.listdir(path):
+            child = os.path.join(path, name)
+            try:
+                send2trash(child)
+                ok += 1
+            except Exception as ex2:  # noqa: BLE001
+                fail += 1
+                first_err = first_err or f"{name}: {ex2}"
+    except OSError as ex3:
+        return str(ex3)
+    if fail == 0:
+        return None
+    return f"partial: {ok} items moved, {fail} in use and skipped (close the app that uses them and retry). First: {first_err}"
+
+
+def _recycle_many(paths: list[str], progress=None) -> list[tuple[str, str | None]]:
+    """Recycle each path; returns [(path, error_or_None)]. `progress(i, n, path, err)` after each one."""
     res = []
-    for p in paths:
-        try:
-            send2trash(p)
-            res.append((p, None))
-        except Exception as ex:  # noqa: BLE001 - report every failure to the user
-            res.append((p, str(ex)))
+    for i, p in enumerate(paths, 1):
+        err = _recycle_one(p)
+        res.append((p, err))
+        if progress:
+            progress(i, len(paths), p, err)
     return res
 
 
@@ -155,40 +183,65 @@ def _run_command(cmd: str, admin: bool) -> tuple[bool, str]:
     return r.returncode == 0, (r.stdout + r.stderr).strip()[-2000:] or f"exit {r.returncode}"
 
 
-def execute(con: sqlite3.Connection, actions: list[Action], dry_run: bool = True) -> list[Action]:
-    recycle_user = [a for a in actions if not a.refused and a.method == "recycle" and not a.admin]
-    recycle_admin = [a for a in actions if not a.refused and a.method == "recycle" and a.admin]
+def execute(con: sqlite3.Connection, actions: list[Action], dry_run: bool = True, log=None, progress=None) -> list[Action]:
+    """Run the plan. Order matters: commands first (so "Empty the Recycle Bin" only empties what was in the
+    bin BEFORE this cleanup and the items we move there afterwards stay recoverable), then user-level
+    Recycle Bin moves, then admin-only moves through one elevated helper. Every action is logged as it
+    completes, so a crash or a closed browser still leaves a record. `progress(done, total)` after each."""
+    log = log or (lambda *a, **k: None)
+    total = len(actions)
+    count = 0
+
+    def done(a: Action, result: str, detail: str | None):
+        nonlocal count
+        a.result, a.detail = result, detail
+        _log(con, a)
+        count += 1
+        if progress:
+            progress(count, total)
+        log(f"  {result:7} {a.path}" + (f"  ({detail})" if detail and result != "ok" else ""))
+
     for a in actions:
         if a.refused:
-            a.result, a.detail = "skipped", a.refused
+            done(a, "skipped", a.refused)
         elif dry_run:
-            a.result = "dry-run"
-            a.detail = {"recycle": "would move to Recycle Bin", "command": f"would run: {a.command}",
-                        "manual": "would open the tool / show instructions"}.get(a.method, "")
-    if not dry_run:
-        for group, fn in ((recycle_user, _recycle_many), (recycle_admin, _recycle_elevated)):
-            if not group:
-                continue
-            for a, (_, err) in zip(group, fn([a.path for a in group])):
-                a.result = "failed" if err else "ok"
-                a.detail = err or "moved to Recycle Bin"
-        seen_cmds: set[str] = set()
-        for a in actions:
-            if a.refused or a.method != "command":
-                continue
-            if a.command in seen_cmds:  # e.g. both Recycle Bins share one command
-                a.result, a.detail = "ok", "covered by an earlier identical command"
-                continue
-            seen_cmds.add(a.command)
-            ok, out = _run_command(a.command, a.admin)
-            a.result, a.detail = ("ok" if ok else "failed"), out
-        for a in actions:
-            if not a.refused and a.method == "manual":
-                a.result, a.detail = "skipped", "manual step: " + (a.command or "see the action text")
-    con.execute("BEGIN")
+            done(a, "dry-run", {"recycle": "would move to Recycle Bin", "command": f"would run: {a.command}",
+                                "manual": "would open the tool / show instructions"}.get(a.method, ""))
+    if dry_run:
+        return actions
+
+    seen_cmds: set[str] = set()
+    cmds = [a for a in actions if not a.refused and a.method == "command"]
+    if cmds:
+        log(f"Running {len(cmds)} cleanup command(s)...")
+    for a in cmds:
+        if a.command in seen_cmds:  # e.g. both Recycle Bins share one command
+            done(a, "ok", "covered by an earlier identical command")
+            continue
+        seen_cmds.add(a.command)
+        log(f"  running: {a.command}" + (" (admin)" if a.admin else ""))
+        ok, out = _run_command(a.command, a.admin)
+        done(a, "ok" if ok else "failed", out)
+
+    recycle_user = [a for a in actions if not a.refused and a.method == "recycle" and not a.admin]
+    if recycle_user:
+        log(f"Moving {len(recycle_user)} item(s) to the Recycle Bin...")
+        by_path = {a.path: a for a in recycle_user}
+        _recycle_many([a.path for a in recycle_user],
+                      progress=lambda i, n, p, err: done(by_path[p], "failed" if err else "ok", err or "moved to Recycle Bin"))
+
+    recycle_admin = [a for a in actions if not a.refused and a.method == "recycle" and a.admin]
+    if recycle_admin:
+        log(f"Moving {len(recycle_admin)} admin-only item(s) (approve the Windows prompt)...")
+        for a, (_, err) in zip(recycle_admin, _recycle_elevated([a.path for a in recycle_admin])):
+            done(a, "failed" if err else "ok", err or "moved to Recycle Bin")
+
     for a in actions:
-        _log(con, a)
-    con.execute("COMMIT")
+        if not a.refused and a.method == "manual":
+            done(a, "skipped", "manual step: " + (a.command or "see the action text"))
+    freed = sum(a.bytes for a in actions if a.result == "ok")
+    log(f"Finished: {sum(1 for a in actions if a.result == 'ok')} ok, {sum(1 for a in actions if a.result == 'failed')} failed, "
+        f"{sum(1 for a in actions if a.result == 'skipped')} skipped. About {freed / 1e9:.1f} GB freed.")
     return actions
 
 

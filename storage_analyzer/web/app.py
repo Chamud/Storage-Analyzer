@@ -28,7 +28,12 @@ app = FastAPI(title="Storage Analyzer")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 _lock = threading.Lock()
-_job: dict = {"running": False, "kind": None, "log": [], "error": None, "started": None, "finished": None}
+_job: dict = {"running": False, "kind": None, "log": [], "error": None, "started": None, "finished": None,
+              "progress": None, "result": None}
+
+
+def _job_progress(done: int, total: int, label: str | None = None):
+    _job["progress"] = {"done": done, "total": total, "label": label}
 
 
 def _con():
@@ -55,7 +60,7 @@ def _run_job(kind: str, fn):
         if _job["running"]:
             raise HTTPException(409, f"A {_job['kind']} job is already running")
         _job.update(running=True, kind=kind, log=[], error=None, started=datetime.now().isoformat(timespec="seconds"),
-                    finished=None)
+                    finished=None, progress=None, result=None)
 
     def body():
         try:
@@ -273,12 +278,26 @@ def cleanup_plan(body: Ids):
 
 @app.post("/api/cleanup/run")
 def cleanup_run(body: Ids):
+    """Dry runs answer immediately. Real cleanups run as a background job (watch /api/jobs; results land in
+    /api/log), because moving hundreds of folders and running commands can take minutes."""
     con = _con()
     sid = _scan_id(con)
     acts = actions.plan(con, sid, body.node_ids)
-    res = actions.execute(con, acts, dry_run=body.dry_run)
-    freed = sum(a.bytes for a in res if a.result == "ok")
-    return {"actions": [a.__dict__ for a in res], "freed": freed, "dry_run": body.dry_run}
+    if body.dry_run:
+        res = actions.execute(con, acts, dry_run=True)
+        return {"actions": [a.__dict__ for a in res], "freed": 0, "dry_run": True, "started": False}
+
+    def job():
+        c = db.connect()
+        res = actions.execute(c, acts, dry_run=False, log=_job_log,
+                              progress=lambda d, t: _job_progress(d, t, "items processed"))
+        _job["result"] = {"ok": sum(1 for a in res if a.result == "ok"), "failed": sum(1 for a in res if a.result == "failed"),
+                          "skipped": sum(1 for a in res if a.result == "skipped"),
+                          "freed": sum(a.bytes for a in res if a.result == "ok"),
+                          "ok_ids": [a.node_id for a in res if a.result == "ok"]}
+    _job["result"] = None
+    _run_job("cleanup", job)
+    return {"started": True, "dry_run": False, "count": sum(1 for a in acts if not a.refused)}
 
 
 @app.get("/api/log")
@@ -305,7 +324,8 @@ def ai_run(body: AiReq):
     def job():
         c = db.connect()
         res = claude_code.run(c, sid, model=body.model or claude_code.MODEL, limit=body.limit,
-                              node_ids=body.node_ids, log=_job_log)
+                              node_ids=body.node_ids, log=_job_log,
+                              progress=lambda d, t: _job_progress(d, t, "folders sent to Claude"))
         _job["log"].append(f"done: {res}")
     _run_job("ai", job)
     return {"started": True}
@@ -321,11 +341,15 @@ def scan_start(body: ScanReq):
     def job():
         from ..scan import run_scan
         c = db.connect()
+        _job_progress(0, 3, "step 1/3: scanning")
         sid = run_scan(c, body.drives, admin=body.admin, log=_job_log)
+        _job_progress(1, 3, "step 2/3: classifying")
         analysis.run_classify(c, sid, log=_job_log)
+        _job_progress(2, 3, "step 3/3: AI helper")
         if db.get_setting(c, "ai_enabled", "1") == "1" and claude_code.is_available():
             _job_log("Asking the AI helper about unknown folders (cached answers reused)...")
-            claude_code.run(c, sid, log=_job_log)
+            claude_code.run(c, sid, log=_job_log, progress=lambda d, t: _job_progress(d, t, "step 3/3: folders sent to Claude"))
+        _job_progress(3, 3, "done")
     _run_job("scan", job)
     return {"started": True}
 

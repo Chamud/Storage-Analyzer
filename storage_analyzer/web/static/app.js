@@ -345,9 +345,18 @@
       $("#run").disabled = true; $("#run-out").innerHTML = `<div class="muted">Working…</div>`;
       try {
         const r = await api("/api/cleanup/run", { node_ids: ids, dry_run: dry });
-        const lines = r.actions.map((a) => `<div class="muted"><span class="${a.result === "dry-run" ? "" : a.result}">${a.result}</span> ${esc(a.path)} — ${esc(a.detail || "")}</div>`).join("");
-        if (dry) { $("#run-out").innerHTML = `<div class="gitbox na">Dry run: nothing was changed.</div>${lines}`; $("#run").disabled = false; }
-        else { st.cleaned = `Cleaned ${r.actions.filter((a) => a.result === "ok").length} items and freed ${fmt(r.freed)}. ${r.actions.filter((a) => a.result === "failed").length ? "Some failed: see below." : "Rescan to update the numbers."}`; r.actions.forEach((a) => { if (a.result === "ok") toggleSel(a.node_id, false); }); await renderCleanup(); $("#run-out").innerHTML = lines; }
+        if (dry) {
+          const lines = r.actions.map((a) => `<div class="muted"><span class="${a.result === "dry-run" ? "" : a.result}">${a.result}</span> ${esc(a.path)} — ${esc(a.detail || "")}</div>`).join("");
+          $("#run-out").innerHTML = `<div class="gitbox na">Dry run: nothing was changed.</div>${lines}`; $("#run").disabled = false;
+        } else {
+          $("#run-out").innerHTML = `<div class="muted">Cleaning ${r.count} items in the background. Progress is shown at the top of the page; you can switch views meanwhile.</div>`;
+          watchJob("Cleaning up…", async (j) => {
+            const res = j.result || {};
+            (res.ok_ids || []).forEach((id) => toggleSel(id, false));
+            st.cleaned = `Cleaned ${res.ok || 0} items and freed about ${fmt(res.freed)}. ${res.failed ? res.failed + " failed (usually files in use): see History." : ""} Rescan to update the numbers.`;
+            if (st.view === "cleanup") await renderCleanup();
+          });
+        }
       } catch (e) { toast(e.message, true); $("#run").disabled = false; }
     };
   }
@@ -380,15 +389,23 @@
   // ---------------------------------------------------------------- jobs (scan / ai)
   async function runAi(body) { try { await api("/api/ai/run", body); watchJob("Asking Claude Code…"); } catch (e) { toast(e.message, true); } }
   async function setAi(on) { const r = await api("/api/settings", { ai_enabled: on }); st.state.ai_enabled = r.ai_enabled; await loadState(); }
-  function watchJob(title) {
+  function watchJob(title, onDone) {
     const box = $("#job"); box.classList.remove("hidden"); $("#job-title").textContent = title;
     clearInterval(st.jobTimer);
     st.jobTimer = setInterval(async () => {
       const j = await api("/api/jobs");
       const secs = j.started ? Math.max(0, Math.round((Date.now() - new Date(j.started)) / 1000)) : 0;
       $("#job-title").textContent = `${title} ${j.running ? `· running ${Math.floor(secs / 60)}m ${secs % 60}s` : "· finished"}`;
-      $("#job-log").textContent = j.log.slice(-12).join("\n");
-      if (!j.running) { clearInterval(st.jobTimer); setTimeout(() => box.classList.add("hidden"), 6000); if (j.error) toast(j.error, true); else toast(title.replace("…", "") + " finished"); await loadState(); render(); }
+      const p = j.progress, fill = $("#job-fill");
+      if (p && p.total) { const pct = Math.round(100 * p.done / p.total); fill.classList.remove("pulse"); fill.style.width = (j.running ? pct : 100) + "%"; $("#job-pct").textContent = `${p.done} / ${p.total}${p.label ? " " + p.label : ""} · ${pct}%`; }
+      else { fill.classList.toggle("pulse", j.running); fill.style.width = j.running ? "" : "100%"; $("#job-pct").textContent = j.running ? "working…" : "done"; }
+      const logEl = $("#job-log"); const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+      logEl.textContent = j.log.slice(-200).join("\n"); if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      if (!j.running) {
+        clearInterval(st.jobTimer); setTimeout(() => box.classList.add("hidden"), 10000);
+        if (j.error) toast(j.error, true); else toast(title.replace("…", "") + " finished");
+        if (onDone) await onDone(j); else { await loadState(); render(); }
+      }
     }, 1000);
   }
   $("#rescan").onclick = async () => { try { await api("/api/scan", { admin: true }); watchJob("Scanning drives (approve the admin prompt)…"); } catch (e) { toast(e.message, true); } };
@@ -397,5 +414,5 @@
   $("#min-bytes").onchange = (e) => { st.minBytes = Number(e.target.value); save(); render(); };
   $$(".nav").forEach((b) => b.onclick = () => setView(b.dataset.view));
 
-  loadState().then(async () => { const j = await api("/api/jobs"); if (j.running) watchJob(j.kind + "…"); setView(st.view); }).catch((e) => toast(e.message, true));
+  loadState().then(async () => { const j = await api("/api/jobs"); if (j.running) watchJob({ scan: "Scanning drives", ai: "Asking Claude Code", cleanup: "Cleaning up", classify: "Classifying" }[j.kind] + "…"); setView(st.view); }).catch((e) => toast(e.message, true));
 })();

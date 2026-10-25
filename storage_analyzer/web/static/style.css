@@ -50,6 +50,11 @@ select { background: var(--panel); color: var(--text); border: 1px solid var(--l
 #ai-toggle small { color: var(--muted); font-size: 11px; }
 .job { background: var(--panel); border: 1px solid var(--accent); border-radius: 12px; padding: 12px 16px; }
 .job pre { margin: 8px 0 0; max-height: 220px; overflow: auto; font-size: 12px; color: var(--muted); white-space: pre-wrap; }
+.job-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: baseline; }
+.job-bar { height: 8px; margin-top: 8px; }
+.job-bar span { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .4s; }
+.job-bar span.pulse { width: 30%; animation: pulse 1.4s ease-in-out infinite alternate; }
+@keyframes pulse { from { transform: translateX(0); } to { transform: translateX(233%); } }
 .toast { position: fixed; right: 20px; bottom: 20px; background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 12px 16px; max-width: 420px; z-index: 50; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
 .toast.err { border-color: var(--keep); }
 .view { display: flex; flex-direction: column; gap: 18px; }

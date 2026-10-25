@@ -35,8 +35,11 @@ claude -p "<instructions + JSON batch>" --output-format json --model <SA_AI_MODE
 
 - Uses your existing Claude Code login; no API key in this project.
 - No tools: the model cannot read, run or delete anything. It can only answer.
-- Batches of up to 20 folders per call; the reply is a JSON array validated before use.
-- Each answer is cached in `ai_cache` (path + size/mtime/count fingerprint), so a rescan does not re-ask.
+- Batches of 10 folders per call, 3 calls in flight at once; the reply is validated against a JSON schema.
+- Each answer is cached in `ai_cache` (path + size/mtime/count fingerprint). A rescan does not re-ask; a
+  folder that merely changed size (±50%, e.g. after its cache was cleaned) reuses the answer for 30 days.
+- Speed is dominated by output length and CLI start-up, not by the model: Opus is *slower* than Sonnet,
+  Haiku is faster. `SA_AI_MODEL=haiku` for a quick pass.
 
 ## What the model may say
 

@@ -18,7 +18,9 @@ from .. import config
 from ..rules import load_rules
 
 MODEL = os.environ.get("SA_AI_MODEL", "sonnet")
-BATCH = 20
+BATCH = 10            # items per claude call
+PARALLEL = 3          # calls in flight at once
+CACHE_DAYS = 30       # reuse an answer for the same path this long, even if the folder changed size a bit
 MAX_WALK_FILES = 3000
 MAX_CHILDREN = 25
 
@@ -219,9 +221,22 @@ def pending(con: sqlite3.Connection, scan_id: int, min_bytes: int = 100 * 1024 *
 
 
 def cached(con: sqlite3.Connection, node: sqlite3.Row) -> dict | None:
+    """Exact fingerprint match first. Otherwise a recent answer for the same path whose size is within ±50%
+    (a folder whose cache we just deleted is still the same kind of folder)."""
     row = con.execute("SELECT response FROM ai_cache WHERE path=? AND fingerprint=?",
                       (node["path"].lower(), fingerprint(node))).fetchone()
-    return json.loads(row["response"]) if row else None
+    if row:
+        return json.loads(row["response"])
+    for r in con.execute("SELECT fingerprint, response, created_at FROM ai_cache WHERE path=? ORDER BY created_at DESC",
+                         (node["path"].lower(),)):
+        try:
+            old_alloc = int(r["fingerprint"].split("|")[0])
+            age = (datetime.now() - datetime.fromisoformat(r["created_at"])).days
+        except (ValueError, IndexError):
+            continue
+        if age <= CACHE_DAYS and old_alloc and 0.5 <= node["allocated"] / old_alloc <= 2.0:
+            return json.loads(r["response"])
+    return None
 
 
 def apply(con: sqlite3.Connection, scan_id: int, node: sqlite3.Row, ans: dict) -> None:
@@ -256,31 +271,45 @@ def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: b
         return {"cached": hits, "asked": 0}
     if not is_available() and not dry_run:
         raise RuntimeError("Claude Code CLI (`claude`) not found on PATH. Install it or run with --dry-run.")
-    asked = 0
-    n_batches = (len(todo) + BATCH - 1) // BATCH
-    for i in range(0, len(todo), BATCH):
-        batch = todo[i:i + BATCH]
-        b = i // BATCH + 1
-        if progress:
-            progress(i, len(todo))
-        log(f"  batch {b}/{n_batches}: summarising {len(batch)} items...")
-        items = [summarize(con, scan_id, n) for n in batch]
-        if dry_run:
+    import time
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    batches = [todo[i:i + BATCH] for i in range(0, len(todo), BATCH)]
+    log(f"  summarising {len(todo)} items in {len(batches)} batch(es), {min(PARALLEL, len(batches))} at a time...")
+    summaries = [[summarize(con, scan_id, n) for n in batch] for batch in batches]  # metadata; uses the DB, so main thread
+    if dry_run:
+        for items in summaries:
             log(json.dumps(items, indent=1, ensure_ascii=False))
-            continue
-        import time
-        t0 = time.time()
-        log(f"  batch {b}/{n_batches}: asking {model} (usually 1-3 minutes per batch, 5 minute limit)...")
-        answers = {a["path"].lower(): a for a in ask(items, model=model)}
-        log(f"  batch {b}/{n_batches}: answered in {time.time() - t0:.0f}s")
-        for n in batch:
-            a = answers.get(n["path"].lower())
-            if not a:
-                log(f"  no answer for {n['path']}")
+        return {"cached": hits, "asked": 0}
+    if progress:
+        progress(0, len(todo))
+    t0 = time.time()
+    log(f"  asking {model} (about a minute per batch; batches run in parallel, 5 minute limit each)...")
+    asked = 0
+    done_items = 0
+
+    def call(idx: int):
+        return idx, ask(summaries[idx], model=model)
+
+    with ThreadPoolExecutor(max_workers=PARALLEL) as ex:
+        futures = [ex.submit(call, i) for i in range(len(batches))]
+        for fut in as_completed(futures):
+            try:
+                idx, answers_list = fut.result()
+            except Exception as ex_:  # noqa: BLE001 - one failed batch must not lose the others
+                log(f"  a batch failed: {ex_}")
                 continue
-            apply(con, scan_id, n, a)
-            asked += 1
-            log(f"  {a['safety']:6} {a['category']:9} {a['confidence']:.0%}  {n['path']}  — {a['reason']}")
-        if progress:
-            progress(min(i + BATCH, len(todo)), len(todo))
+            answers = {a["path"].lower(): a for a in answers_list}
+            log(f"  batch {idx + 1}/{len(batches)} answered after {time.time() - t0:.0f}s")
+            for n in batches[idx]:
+                a = answers.get(n["path"].lower())
+                if not a:
+                    log(f"  no answer for {n['path']}")
+                    continue
+                apply(con, scan_id, n, a)   # sqlite writes stay on this thread
+                asked += 1
+                log(f"  {a['safety']:6} {a['category']:9} {a['confidence']:.0%}  {n['path']}  — {a['reason']}")
+            done_items += len(batches[idx])
+            if progress:
+                progress(done_items, len(todo))
     return {"cached": hits, "asked": asked}

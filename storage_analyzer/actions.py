@@ -38,6 +38,7 @@ class Action:
     safety: str = "unknown"
     reason: str = ""
     refused: str | None = None  # why this will not run
+    warning: str | None = None  # runs, but the user should know (e.g. referenced by a tool config)
     result: str | None = None
     detail: str | None = None
 
@@ -81,11 +82,13 @@ def is_protected(con: sqlite3.Connection, scan_id: int, path: str) -> str | None
     return None
 
 
-def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int], in_use=None) -> list[Action]:
+def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int], in_use=None, refs=None) -> list[Action]:
     from .procs import InUseIndex
+    from .refs import RefIndex
     rs = load_rules()
     allowed_cmds = {r.command for r in rs.rules if r.command}
     in_use = in_use if in_use is not None else InUseIndex()
+    refs = refs if refs is not None else RefIndex()
     out: list[Action] = []
     for nid in node_ids:
         n = con.execute("SELECT * FROM nodes WHERE id=? AND scan_id=?", (nid, scan_id)).fetchone()
@@ -108,6 +111,8 @@ def plan(con: sqlite3.Connection, scan_id: int, node_ids: list[int], in_use=None
             a.refused = "path no longer exists (rescan)"
         elif a.method == "recycle" and n["is_dir"] and (busy := in_use.describe(n["path"])):
             a.refused = busy + "; close it and try again"
+        if not a.refused and n["is_dir"] and (ref := refs.describe(n["path"])):
+            a.warning = ref + ". That tool will stop working until you remove or re-point the entry."
         out.append(a)
     return out
 

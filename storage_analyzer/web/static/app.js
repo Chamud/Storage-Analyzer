@@ -331,7 +331,7 @@
     const log = await api("/api/log?limit=30");
     el.innerHTML = `${st.cleaned ? `<div class="gitbox ok" role="status">${esc(st.cleaned)}</div>` : ""}
       <div class="cols"><div class="w list"><div class="hd"><h2>Selected for cleanup</h2><div class="actions"><small>${plan.length} items</small><button class="btn small" id="clear-sel">Clear</button></div></div>
-        ${plan.map((a) => `<div class="row"><div class="body"><div class="name">${esc(a.path.split("\\").pop() || a.path)} <span class="pill ${a.safety}">${SAF[a.safety] || a.safety}</span>${a.admin ? '<span class="tag admin">needs admin</span>' : ""}</div><div class="path">${esc(a.path)}</div><div class="how">${a.refused ? `<span class="failed">Refused: ${esc(a.refused)}</span>` : { recycle: "Moves to the Recycle Bin", command: "Runs: " + esc(a.command), manual: "Manual step: " + esc(a.command || a.reason), none: "Nothing to do" }[a.method]}</div></div><div class="size">${fmt(a.bytes)}</div><button class="btn small" data-rm="${a.node_id}" aria-label="Remove">✕</button></div>`).join("") || `<div class="empty">Nothing selected yet. Tick items in Overview, Projects, Categories or Tidy up.</div>`}</div>
+        ${plan.map((a) => `<div class="row"><div class="body"><div class="name">${esc(a.path.split("\\").pop() || a.path)} <span class="pill ${a.safety}">${SAF[a.safety] || a.safety}</span>${a.admin ? '<span class="tag admin">needs admin</span>' : ""}</div><div class="path">${esc(a.path)}</div><div class="how">${a.refused ? `<span class="failed">Refused: ${esc(a.refused)}</span>` : { recycle: "Moves to the Recycle Bin", command: "Runs: " + esc(a.command), manual: "Manual step: " + esc(a.command || a.reason), none: "Nothing to do" }[a.method]}</div>${a.warning ? `<div class="how skipped">⚠ ${esc(a.warning)}</div>` : ""}</div><div class="size">${fmt(a.bytes)}</div><button class="btn small" data-rm="${a.node_id}" aria-label="Remove">✕</button></div>`).join("") || `<div class="empty">Nothing selected yet. Tick items in Overview, Projects, Categories or Tidy up.</div>`}</div>
       <div class="n"><div class="card"><small class="muted">You will free</small><div class="cart-total">${fmt(total)}</div>
           <div class="muted">${byM("recycle")} to the Recycle Bin (undo possible)<br>${byM("command")} through a built-in cleanup command<br>${byM("manual")} done by you in another app<br>${ok.filter((a) => a.admin).length} need admin: one Windows prompt</div>
           <label class="muted" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="dry" checked> Dry run first (show exactly what will happen)</label>
@@ -341,7 +341,8 @@
     $$("[data-rm]", el).forEach((b) => b.onclick = () => { toggleSel(b.dataset.rm, false); renderCleanup(); });
     $("#run").onclick = async () => {
       const dry = $("#dry").checked;
-      if (!dry && !confirm(`Clean ${ok.length} items (${fmt(total)})? Files go to the Recycle Bin; commands run as listed.`)) return;
+      const warned = ok.filter((a) => a.warning).length;
+      if (!dry && !confirm(`Clean ${ok.length} items (${fmt(total)})? Files go to the Recycle Bin; commands run as listed.${warned ? `\n\nWARNING: ${warned} item(s) are referenced by a tool config (see the orange notes). Those tools will break.` : ""}`)) return;
       $("#run").disabled = true; $("#run-out").innerHTML = `<div class="muted">Working…</div>`;
       try {
         const r = await api("/api/cleanup/run", { node_ids: ids, dry_run: dry });
@@ -374,6 +375,7 @@
       ${c.reason ? `<div><div class="k muted">Why</div><div>${esc(c.reason)}</div></div>` : ""}${c.action ? `<div><div class="k muted">Recommended action</div><div>${esc(c.action)}</div></div>` : ""}
       ${d.protected ? `<div class="gitbox none">🔒 Protected: ${esc(d.protected)}</div>` : ""}
       ${d.in_use ? `<div class="gitbox warn">⚠ ${esc(d.in_use)}. Cleanup will refuse it until that program is closed.</div>` : ""}
+      ${d.referenced ? `<div class="gitbox warn">⚠ ${esc(d.referenced)}. Deleting it breaks that tool until the entry is removed or re-pointed.</div>` : ""}
       ${ai?.suggested_rule ? `<div><div class="k muted">AI suggested rule (saved to rules/user.yaml if you accept; auto-delete is never enabled by an AI rule)</div><pre class="rule">${esc(JSON.stringify(ai.suggested_rule, null, 1))}</pre><button class="btn small ai" id="dt-rule">Accept rule</button></div>` : ""}
       ${d.nested.length ? `<div><div class="k muted">Already classified inside</div>${d.nested.map((n) => `<div class="row compact"><span class="dot ${n.safety}"></span><div class="body"><div class="path">${esc(n.path.slice(d.path.length + 1))}</div></div><div class="size">${fmt(n.excl_bytes)}</div></div>`).join("")}</div>` : ""}
       <div class="actions">${d.protected ? "" : `<button class="btn safe small" id="dt-sel">${st.sel.has(d.id) ? "Remove from cleanup" : "Add to cleanup"}</button>`}${st.state.ai_available && d.own ? `<button class="btn ai small" id="dt-ai">Ask AI about this</button>` : ""}<button class="btn small" id="dt-exp">Show in Explorer</button><button class="btn small" id="dt-map">Show on map</button></div>`;

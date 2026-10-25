@@ -20,10 +20,10 @@ def run_classify(con: sqlite3.Connection, scan_id: int | None = None, log=print)
     counts = rules_mod.classify(con, scan_id, rs, ptypes, log=log)
     log("Reading git status and project age...")
     projects_mod.analyse(con, scan_id, projs, log=log)
-    log("Checking which folders running programs use...")
+    log("Checking which folders running programs and tool configs use...")
     n = mark_in_use(con, scan_id)
     if n:
-        log(f"  {n} folder(s) are used by a running program: shown as review until it is closed")
+        log(f"  {n} folder(s) are used by a running program or referenced by a tool config: marked review")
     # Re-apply cached AI answers (classification was rebuilt from scratch above). Never calls Claude.
     from .ai import claude_code
     res = claude_code.run(con, scan_id, cache_only=True, log=lambda *a, **k: None)
@@ -33,22 +33,26 @@ def run_classify(con: sqlite3.Connection, scan_id: int | None = None, log=print)
     return scan_id
 
 
-def mark_in_use(con: sqlite3.Connection, scan_id: int, index=None) -> int:
-    """Downgrade safe folders that a running process runs from to review, naming the process."""
+def mark_in_use(con: sqlite3.Connection, scan_id: int, index=None, refs=None) -> int:
+    """Downgrade safe folders to review when a running process runs from them (naming the process) or a tool
+    config references them (naming the tool). Review folders get the note added to their reason."""
     from .procs import InUseIndex
+    from .refs import RefIndex
     index = index or InUseIndex()
-    if not index.procs:
-        return 0
-    rows = con.execute("SELECT c.node_id, n.path, c.reason FROM classifications c JOIN nodes n ON n.id=c.node_id "
-                       "WHERE c.scan_id=? AND c.safety='safe' AND n.is_dir=1", (scan_id,)).fetchall()
+    refs = refs or RefIndex()
+    rows = con.execute("SELECT c.node_id, n.path, c.reason, c.safety FROM classifications c JOIN nodes n ON n.id=c.node_id "
+                       "WHERE c.scan_id=? AND c.safety IN ('safe','review','rebuildable') AND n.is_dir=1", (scan_id,)).fetchall()
     updates = []
     for r in rows:
-        why = index.describe(r["path"])
-        if why:
-            updates.append((why + ". Close it first. " + (r["reason"] or ""), r["node_id"]))
+        notes = [w for w in (index.describe(r["path"]), refs.describe(r["path"])) if w]
+        if notes:
+            note = "; ".join(notes) + ". Deleting it breaks that. "
+            if not (r["reason"] or "").startswith(note):
+                updates.append((note + (r["reason"] or ""), r["node_id"]))
     if updates:
         con.execute("BEGIN")
-        con.executemany("UPDATE classifications SET safety='review', reason=? WHERE scan_id=%d AND node_id=?" % scan_id, updates)
+        con.executemany("UPDATE classifications SET safety=CASE WHEN safety='safe' THEN 'review' ELSE safety END, reason=? "
+                        "WHERE scan_id=%d AND node_id=?" % scan_id, updates)
         con.execute("COMMIT")
     return len(updates)
 

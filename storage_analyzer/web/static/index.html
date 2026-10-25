@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Storage Analyzer</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+  <nav class="side">
+    <div class="brand">
+      <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4CC2A0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"></path><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"></path></svg>
+      <div><b>Storage Analyzer</b><small id="brand-sub">loading…</small></div>
+    </div>
+    <button class="nav" data-view="overview">Overview</button>
+    <button class="nav" data-view="projects">Projects <span class="count" id="nav-projects"></span></button>
+    <button class="nav" data-view="categories">Categories</button>
+    <button class="nav" data-view="explore">Explore map</button>
+    <button class="nav" data-view="tidy">Tidy up</button>
+    <button class="nav" data-view="cleanup">Cleanup <span class="badge" id="nav-cart">0</span></button>
+    <div class="side-foot" id="side-foot"></div>
+  </nav>
+
+  <main class="main">
+    <header class="top">
+      <div>
+        <h1 id="title">Overview</h1>
+        <div class="sub" id="subtitle"></div>
+      </div>
+      <div class="controls">
+        <div class="seg" id="drive-seg"></div>
+        <label class="minsel">List individually: items over
+          <select id="min-bytes">
+            <option value="0">show all</option>
+            <option value="10485760">10 MB</option>
+            <option value="104857600" selected>100 MB</option>
+            <option value="1073741824">1 GB</option>
+          </select>
+        </label>
+        <button class="btn ghost" id="ai-toggle" aria-pressed="true"><span class="track"><span class="knob"></span></span><span><b>AI helper</b><small id="ai-label">on</small></span></button>
+        <button class="btn primary" id="rescan">Rescan drives</button>
+      </div>
+    </header>
+
+    <div id="job" class="job hidden"><b id="job-title"></b><pre id="job-log"></pre></div>
+    <div id="toast" class="toast hidden"></div>
+
+    <section id="view-overview" class="view"></section>
+    <section id="view-projects" class="view hidden"></section>
+    <section id="view-categories" class="view hidden"></section>
+    <section id="view-explore" class="view hidden"></section>
+    <section id="view-tidy" class="view hidden"></section>
+    <section id="view-cleanup" class="view hidden"></section>
+  </main>
+</div>
+
+<div id="detail" class="drawer hidden"><div class="drawer-inner" id="detail-inner"></div></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

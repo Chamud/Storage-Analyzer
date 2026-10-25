@@ -91,6 +91,32 @@ def cmd_report(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ai(a: argparse.Namespace) -> int:
+    from .ai import claude_code
+    con = db.connect()
+    scan_id = db.latest_scan_id(con)
+    if scan_id is None:
+        print("No completed scan yet.", file=sys.stderr)
+        return 1
+    res = claude_code.run(con, scan_id, model=a.model or claude_code.MODEL, dry_run=a.dry_run, limit=a.limit,
+                          drive=a.drive.upper().rstrip(":") if a.drive else None)
+    print(res)
+    return 0
+
+
+def cmd_serve(a: argparse.Namespace) -> int:
+    import webbrowser
+    import uvicorn
+    config.ensure_dirs()
+    url = f"http://{a.host}:{a.port}"
+    if not a.no_browser:
+        threading = __import__("threading")
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    print(f"Storage Analyzer UI: {url}")
+    uvicorn.run("storage_analyzer.web.app:app", host=a.host, port=a.port, log_level="warning", reload=a.reload)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="storage-analyzer")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -118,6 +144,20 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("-n", type=int, default=25)
     r.add_argument("--show", nargs="*", default=["safe", "review", "unknown"], help="which safety lists to print")
     r.set_defaults(fn=cmd_report)
+
+    ai = sub.add_parser("ai", help="ask Claude Code about Unknown items (metadata only)")
+    ai.add_argument("--model", default=None)
+    ai.add_argument("--dry-run", action="store_true", help="print what would be sent, do not call claude")
+    ai.add_argument("--limit", type=int, help="only the N largest unknown items")
+    ai.add_argument("--drive")
+    ai.set_defaults(fn=cmd_ai)
+
+    sv = sub.add_parser("serve", help="start the web UI")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.add_argument("--no-browser", action="store_true")
+    sv.add_argument("--reload", action="store_true", help="auto-reload on code changes (development)")
+    sv.set_defaults(fn=cmd_serve)
 
     a = ap.parse_args(argv)
     return a.fn(a)

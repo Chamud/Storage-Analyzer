@@ -48,7 +48,8 @@ data/              git-ignored: storage.db, exports/*.csv, logs/
 - **Only the scan is elevated.** WizTree is launched through one elevated PowerShell (`scanner/wiztree.py`);
   the server, the AI and deletions run as the normal user. Do not add `-Verb RunAs` anywhere else.
 - **Safety invariants** (enforced in `rules.py`/`actions.py`, keep them that way):
-  - `keep` classifications come only from rules or the user, never from the AI; the AI is capped at `review`.
+  - The AI can never produce `safe`: its answers are `review` or `keep` (a `safe` reply is downgraded).
+    Only rules and the user make something auto-deletable.
   - A `keep` root protects its whole subtree unless a rule sets `override: true`.
   - Deleting goes through `send2trash` (Recycle Bin) by default; permanent delete needs an explicit flag.
   - Any path under a `keep` root, any drive root, and any project with unpushed git work is refused by `actions.py`.

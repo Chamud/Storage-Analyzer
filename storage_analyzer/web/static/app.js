@@ -337,6 +337,8 @@
     clearInterval(st.jobTimer);
     st.jobTimer = setInterval(async () => {
       const j = await api("/api/jobs");
+      const secs = j.started ? Math.max(0, Math.round((Date.now() - new Date(j.started)) / 1000)) : 0;
+      $("#job-title").textContent = `${title} ${j.running ? `· running ${Math.floor(secs / 60)}m ${secs % 60}s` : "· finished"}`;
       $("#job-log").textContent = j.log.slice(-12).join("\n");
       if (!j.running) { clearInterval(st.jobTimer); setTimeout(() => box.classList.add("hidden"), 6000); if (j.error) toast(j.error, true); else toast(title.replace("…", "") + " finished"); await loadState(); render(); }
     }, 1000);

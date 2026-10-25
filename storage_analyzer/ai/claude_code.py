@@ -256,15 +256,20 @@ def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: b
     if not is_available() and not dry_run:
         raise RuntimeError("Claude Code CLI (`claude`) not found on PATH. Install it or run with --dry-run.")
     asked = 0
+    n_batches = (len(todo) + BATCH - 1) // BATCH
     for i in range(0, len(todo), BATCH):
         batch = todo[i:i + BATCH]
-        log(f"  summarising {len(batch)} items...")
+        b = i // BATCH + 1
+        log(f"  batch {b}/{n_batches}: summarising {len(batch)} items...")
         items = [summarize(con, scan_id, n) for n in batch]
         if dry_run:
             log(json.dumps(items, indent=1, ensure_ascii=False))
             continue
-        log(f"  asking {model} ...")
+        import time
+        t0 = time.time()
+        log(f"  batch {b}/{n_batches}: asking {model} (usually 1-3 minutes per batch, 5 minute limit)...")
         answers = {a["path"].lower(): a for a in ask(items, model=model)}
+        log(f"  batch {b}/{n_batches}: answered in {time.time() - t0:.0f}s")
         for n in batch:
             a = answers.get(n["path"].lower())
             if not a:

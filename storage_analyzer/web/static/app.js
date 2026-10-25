@@ -195,28 +195,31 @@
 
   // ---------------------------------------------------------------- explore (treemap)
   function squarify(items, x, y, w, h) {
-    // items: [{value}] sorted desc; returns rects. Classic squarified treemap.
+    // Squarified treemap (Bruls, Huizing, van Wijk). items sorted by value desc; returns rects with x,y,w,h.
     const total = items.reduce((a, i) => a + i.value, 0) || 1;
+    const scale = (w * h) / total;
+    let rest = items.map((i) => ({ ...i, area: Math.max(i.value * scale, 0) }));
     const out = [];
-    let row = [], rx = x, ry = y, rw = w, rh = h;
-    const worst = (r, s) => { const sum = r.reduce((a, i) => a + i.value, 0); const mx = Math.max(...r.map((i) => i.value)), mn = Math.min(...r.map((i) => i.value)); return Math.max(s * s * mx / (sum * sum), sum * sum / (s * s * mn)); };
-    const layout = () => {
-      const sum = row.reduce((a, i) => a + i.value, 0); const vert = rw >= rh;
-      const side = vert ? rh : rw; const thick = (sum / total) * (vert ? rw : rh) * (total / (items.reduce((a, i) => a + i.value, 0) || 1));
-      let off = 0;
-      for (const i of row) { const len = side * i.value / sum; out.push(vert ? { ...i, x: rx, y: ry + off, w: thick, h: len } : { ...i, x: rx + off, y: ry, w: len, h: thick }); off += len; }
-      if (vert) { rx += thick; rw -= thick; } else { ry += thick; rh -= thick; }
-      row = [];
-    };
-    // scale values to area
-    const area = w * h; items = items.map((i) => ({ ...i, value: i.value * area / total }));
-    const tot2 = items.reduce((a, i) => a + i.value, 0);
-    for (const it of items) {
+    let rx = x, ry = y, rw = w, rh = h;
+    const worst = (row, s) => { const sum = row.reduce((a, i) => a + i.area, 0); if (!sum) return Infinity; const mx = Math.max(...row.map((i) => i.area)), mn = Math.min(...row.map((i) => i.area)); return Math.max((s * s * mx) / (sum * sum), (sum * sum) / (s * s * mn)); };
+    while (rest.length) {
       const side = Math.min(rw, rh);
-      if (!row.length || worst([...row, it], side) <= worst(row, side)) row.push(it); else { layout(); row.push(it); }
+      let row = [rest[0]], i = 1;
+      while (i < rest.length && worst([...row, rest[i]], side) <= worst(row, side)) { row.push(rest[i]); i++; }
+      rest = rest.slice(i);
+      const sum = row.reduce((a, it) => a + it.area, 0);
+      if (rw >= rh) { // vertical strip on the left
+        const strip = sum / rh; let off = 0;
+        for (const it of row) { const len = it.area / strip; out.push({ ...it, x: rx, y: ry + off, w: strip, h: len }); off += len; }
+        rx += strip; rw -= strip;
+      } else { // horizontal strip on top
+        const strip = sum / rw; let off = 0;
+        for (const it of row) { const len = it.area / strip; out.push({ ...it, x: rx + off, y: ry, w: len, h: strip }); off += len; }
+        ry += strip; rh -= strip;
+      }
+      if (rw <= 0 || rh <= 0) break;
     }
-    if (row.length) layout();
-    return out.map((r) => ({ ...r, value: r.value * total / tot2 }));
+    return out;
   }
   async function renderExplore() {
     const el = $("#view-explore");

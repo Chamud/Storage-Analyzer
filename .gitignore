@@ -1,0 +1,24 @@
+# Third-party binaries (WizTree may not be redistributed; fetch with scripts/get_wiztree.py)
+tools/
+
+# Scan data, exports, database, logs
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+
+# User-specific rules live in rules/user.yaml and ARE committed; secrets are not
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

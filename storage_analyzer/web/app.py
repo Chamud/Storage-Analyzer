@@ -219,7 +219,7 @@ def tree(node_id: int | None = None, path: str | None = None, drive: str | None 
     crumbs.reverse()
     return {"node": {"id": node["id"], "path": node["path"], "name": node["name"], "allocated": node["allocated"]},
             "crumbs": crumbs, "children": out_kids,
-            "rest": {"count": len(rest), "allocated": sum(r["allocated"] for r in rest)}}
+            "rest": rest}
 
 
 @app.get("/api/node/{node_id}")

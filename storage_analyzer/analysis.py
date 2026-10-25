@@ -20,6 +20,11 @@ def run_classify(con: sqlite3.Connection, scan_id: int | None = None, log=print)
     counts = rules_mod.classify(con, scan_id, rs, ptypes, log=log)
     log("Reading git status and project age...")
     projects_mod.analyse(con, scan_id, projs, log=log)
+    # Re-apply cached AI answers (classification was rebuilt from scratch above). Never calls Claude.
+    from .ai import claude_code
+    res = claude_code.run(con, scan_id, cache_only=True, log=lambda *a, **k: None)
+    if res["cached"]:
+        log(f"  re-applied {res['cached']} cached AI answers")
     log("Done: " + ", ".join(f"{k}={v}" for k, v in sorted(counts.items())))
     return scan_id
 

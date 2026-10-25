@@ -237,8 +237,8 @@ def apply(con: sqlite3.Connection, scan_id: int, node: sqlite3.Row, ans: dict) -
 
 
 def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: bool = False, limit: int | None = None,
-        drive: str | None = None, node_ids: list[int] | None = None, log=print) -> dict:
-    nodes = pending(con, scan_id, drive=drive, node_ids=node_ids)
+        drive: str | None = None, node_ids: list[int] | None = None, cache_only: bool = False, log=print) -> dict:
+    nodes = pending(con, scan_id, min_bytes=0 if cache_only else 100 * 1024 * 1024, drive=drive, node_ids=node_ids)
     if limit:
         nodes = nodes[:limit]
     hits = 0
@@ -251,7 +251,7 @@ def run(con: sqlite3.Connection, scan_id: int, *, model: str = MODEL, dry_run: b
         else:
             todo.append(n)
     log(f"{len(nodes)} unknown items: {hits} answered from cache, {len(todo)} to ask")
-    if not todo:
+    if not todo or cache_only:
         return {"cached": hits, "asked": 0}
     if not is_available() and not dry_run:
         raise RuntimeError("Claude Code CLI (`claude`) not found on PATH. Install it or run with --dry-run.")

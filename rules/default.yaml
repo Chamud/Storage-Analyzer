@@ -66,8 +66,8 @@ rules:
     match: { path: "?:\\hiberfil.sys" }
     category: system
     safety: safe
-    reason: "Hibernation file. Only needed for Hibernate / Fast Startup; Sleep keeps working without it."
-    action: "Turn hibernation off"
+    reason: "Hidden system file where Windows saves RAM for Hibernate and for Fast Startup (sized ~40% of RAM). Explorer hides it even with hidden files on. Sleep does not use it. Without it a cold boot is a few seconds slower on an SSD and Hibernate is gone; powercfg /h on brings it back any time."
+    action: "Turn hibernation off (powercfg /h off). Middle option: powercfg /h /type reduced keeps Fast Startup and halves the file."
     method: command
     command: "powercfg /h off"
     admin: true
@@ -271,20 +271,29 @@ rules:
     match: { path: ["%LOCALAPPDATA%\\NVIDIA", "%LOCALAPPDATA%\\NVIDIA Corporation", "%LOCALAPPDATA%\\AMD", "%LOCALAPPDATA%\\Google", "%LOCALAPPDATA%\\BraveSoftware", "%LOCALAPPDATA%\\Microsoft\\Edge", "%LOCALAPPDATA%\\Mozilla"] }
     category: appcache
     safety: container
+  - id: browser-program
+    match: { path: ["%LOCALAPPDATA%\\Google\\Chrome\\Application", "%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\Application", "%LOCALAPPDATA%\\Microsoft\\Edge\\Application", "%LOCALAPPDATA%\\Vivaldi\\Application", "%LOCALAPPDATA%\\Programs\\Opera*"] }
+    override: true
+    category: apps
+    safety: keep
+    reason: "The browser program itself (per-user install)."
+    action: "Uninstall in Settings > Apps if you no longer use it"
+    method: none
   - id: browser-profile
     match: { path: ["%LOCALAPPDATA%\\Google\\Chrome\\User Data", "%LOCALAPPDATA%\\BraveSoftware\\Brave-Browser\\User Data", "%LOCALAPPDATA%\\Microsoft\\Edge\\User Data", "%APPDATA%\\Mozilla\\Firefox\\Profiles"] }
     override: true
     category: appcache
     safety: keep
-    reason: "Browser profile: bookmarks, passwords, history, extensions. Only the Cache folders inside are safe."
+    reason: "Browser profile: cookies (your logins), bookmarks, passwords, history, extensions. Deleting this logs you out everywhere and loses anything not synced. Only the Cache folders inside are safe."
     action: "Clear cache from the browser, or tick the Cache folders below"
     method: none
   - id: generic-app-cache
     match:
+      # Cache folders only. Logins live in Cookies / Login Data / Local Storage / IndexedDB, which are NOT listed here.
       name: ["Cache", "Cache2", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",
              "ShaderCache", "CachedData", "CachedExtensionVSIXs", "CacheStorage", "Crashpad", "logs", "Logs",
-             "blob_storage", "Service Worker", "IndexedDB-journal", "WebStorage-journal", "CachedProfiles",
-             "GrShaderCache", "GraphiteDawnCache", "Cache_Data", "Media Cache", "ScriptCache", "Code_Cache"]
+             "blob_storage", "CachedProfiles", "GrShaderCache", "GraphiteDawnCache", "Cache_Data", "Media Cache",
+             "ScriptCache", "Code_Cache"]
       under: ["~\\AppData", "~\\.cache", "~\\.config", "%PROGRAMDATA%"]
       is_dir: true
       min_bytes: 10485760
@@ -292,8 +301,8 @@ rules:
     override: true
     category: appcache
     safety: safe
-    reason: "An application cache. Rebuilt by the app; close the app first so files are not locked."
-    action: "Delete to Recycle Bin (app closed)"
+    reason: "An application cache: downloaded page assets, compiled scripts, shaders. Rebuilt by the app. Logins, bookmarks, passwords and settings are stored elsewhere and are not touched."
+    action: "Delete to Recycle Bin (app closed, otherwise files are locked and skipped)"
   - id: capcut-cache
     match: { path: ["%LOCALAPPDATA%\\CapCut\\User Data\\Cache", "%LOCALAPPDATA%\\CapCut\\User Data\\Cache\\**", "%LOCALAPPDATA%\\CapCut\\Apps\\*\\Cache"] }
     priority: 2

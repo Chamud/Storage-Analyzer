@@ -97,6 +97,9 @@ def test_protection(con):
     assert actions.is_protected(c, sid, "C:\\Windows\\System32")
     assert actions.is_protected(c, sid, "C:\\Users\\me\\Documents")
     assert actions.is_protected(c, sid, "C:\\Users\\me\\src\\app")
+    assert actions.is_protected(c, sid, "C:\\Users\\me"), "unclassified container must be refused"
+    assert actions.is_protected(c, sid, "C:\\Users\\me\\AppData\\Local"), "unclassified container must be refused"
+    assert actions.is_protected(c, sid, "C:\\Users\\me\\AppData\\Local\\SomeApp") is None, "unknown root is the user's call"
     assert actions.is_protected(c, sid, "C:\\Windows\\LiveKernelReports") is None
     assert actions.is_protected(c, sid, "C:\\Users\\me\\AppData\\Local\\pip") is None
     assert actions.is_protected(c, sid, "C:\\Users\\me\\src\\app\\node_modules") is None

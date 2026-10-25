@@ -70,13 +70,13 @@ def is_protected(con: sqlite3.Connection, scan_id: int, path: str) -> str | None
     if len(parts) >= 2 and parts[1].lower() in ("windows",) and not _classification_chain(con, scan_id, p):
         return "inside Windows"
     chain = _classification_chain(con, scan_id, p)
-    if chain:
-        nearest = chain[0]
-        if nearest["safety"] == "keep":
-            return f"marked keep ({nearest['rule_id'] or nearest['source']}): {nearest['reason']}"
-    else:
-        # unclassified leaf: inherits whatever the nearest classified ancestor says
-        pass
+    if not chain:
+        # Nothing at or above this path was classified: a container like C:\Users\chamu, or a small
+        # folder nobody looked at. The app only cleans what it has classified; use Explorer for the rest.
+        return "not classified: look inside and pick specific items"
+    nearest = chain[0]
+    if nearest["safety"] == "keep":
+        return f"marked keep ({nearest['rule_id'] or nearest['source']}): {nearest['reason']}"
     return None
 
 

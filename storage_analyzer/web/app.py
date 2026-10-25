@@ -167,28 +167,49 @@ def _effective(con, sid: int, node) -> dict | None:
             cut += "\\"
 
 
+def _children(con, sid: int, node, limit: int) -> tuple[list[dict], dict]:
+    kids = con.execute("SELECT * FROM nodes WHERE scan_id=? AND parent_id=? ORDER BY allocated DESC", (sid, node["id"])).fetchall()
+    shown, rest = kids[:limit], kids[limit:]
+    out = []
+    for k in shown:
+        eff = _effective(con, sid, k) or {}
+        out.append({"id": k["id"], "name": k["name"], "path": k["path"], "is_dir": k["is_dir"],
+                    "allocated": k["allocated"], "mtime": k["mtime"], "files": k["files"], "folders": k["folders"],
+                    "safety": eff.get("safety", "none"), "category": eff.get("category"), "source": eff.get("source"),
+                    "own": eff.get("node_id") == k["id"]})
+    return out, {"count": len(rest), "allocated": sum(r["allocated"] for r in rest)}
+
+
 @app.get("/api/tree")
-def tree(node_id: int | None = None, drive: str | None = None, limit: int = 60):
-    """Children of a node (or the drive root) with effective safety, for the explore map."""
+def tree(node_id: int | None = None, path: str | None = None, drive: str | None = None, limit: int = 60,
+         descend: bool = True, nested: int = 12):
+    """Children of a node (or a path, or the drive root) with effective safety, for the explore map.
+    descend: skip through pass-through folders (one child holding >= 95%), e.g. C:\\Users -> C:\\Users\\chamu.
+    nested: for the largest folders also return their own children (second level of the map)."""
     con = _con()
     sid = _scan_id(con)
-    if node_id is None:
+    if path:
+        node = con.execute("SELECT * FROM nodes WHERE scan_id=? AND path=? COLLATE NOCASE", (sid, path.rstrip("\\") or path)).fetchone()
+    elif node_id is None:
         drive = (drive or "C").upper().rstrip(":")
         node = con.execute("SELECT * FROM nodes WHERE scan_id=? AND path=?", (sid, drive + ":\\")).fetchone()
     else:
         node = con.execute("SELECT * FROM nodes WHERE scan_id=? AND id=?", (sid, node_id)).fetchone()
     if not node:
-        raise HTTPException(404, "node not found")
-    kids = con.execute("SELECT * FROM nodes WHERE scan_id=? AND parent_id=? ORDER BY allocated DESC", (sid, node["id"])).fetchall()
-    shown = kids[:limit]
-    rest = kids[limit:]
-    out_kids = []
-    for k in shown:
-        eff = _effective(con, sid, k) or {}
-        out_kids.append({"id": k["id"], "name": k["name"], "path": k["path"], "is_dir": k["is_dir"],
-                         "allocated": k["allocated"], "mtime": k["mtime"], "files": k["files"], "folders": k["folders"],
-                         "safety": eff.get("safety", "none"), "category": eff.get("category"), "source": eff.get("source"),
-                         "own": eff.get("node_id") == k["id"]})
+        raise HTTPException(404, "node not found in the current scan (the page may be showing an older scan: reload)")
+    out_kids, rest = _children(con, sid, node, limit)
+    hops = 0
+    while descend and hops < 4 and out_kids and out_kids[0]["is_dir"] and node["allocated"] \
+            and out_kids[0]["allocated"] >= 0.95 * node["allocated"] and len(out_kids) + rest["count"] <= 8:
+        node = con.execute("SELECT * FROM nodes WHERE id=?", (out_kids[0]["id"],)).fetchone()
+        out_kids, rest = _children(con, sid, node, limit)
+        hops += 1
+    if nested:
+        total = node["allocated"] or 1
+        for k in out_kids:
+            if k["is_dir"] and k["allocated"] >= 0.03 * total:
+                sub = con.execute("SELECT * FROM nodes WHERE id=?", (k["id"],)).fetchone()
+                k["children"], k["rest"] = _children(con, sid, sub, nested)
     # ancestors for breadcrumbs
     crumbs = []
     cur = node
@@ -219,6 +240,23 @@ def node_detail(node_id: int):
     d["nested"] = [dict(r) for r in con.execute(
         analysis.ITEM_SQL + "AND n.path>? AND n.path<? ORDER BY c.excl_bytes DESC LIMIT 20", (sid, lo, hi))]
     return d
+
+
+class Paths(BaseModel):
+    paths: list[str]
+
+
+@app.post("/api/resolve")
+def resolve(body: Paths):
+    """Map paths to node ids in the current scan (selection survives rescans this way)."""
+    con = _con()
+    sid = _scan_id(con)
+    out = {}
+    for p in body.paths[:10000]:
+        r = con.execute("SELECT id FROM nodes WHERE scan_id=? AND path=?", (sid, p)).fetchone()
+        if r:
+            out[p] = r["id"]
+    return {"scan_id": sid, "ids": out}
 
 
 class Ids(BaseModel):

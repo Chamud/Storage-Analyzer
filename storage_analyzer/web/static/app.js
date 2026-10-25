@@ -7,15 +7,18 @@
   const fmt = (n) => { n = Number(n || 0); if (n >= GB) return (n / GB).toFixed(n >= 100 * GB ? 0 : 1) + " GB"; if (n >= 1048576) return (n / 1048576).toFixed(0) + " MB"; if (n >= 1024) return (n / 1024).toFixed(0) + " KB"; return n + " B"; };
   const SAF = { safe: "Safe", review: "Review", keep: "Keep", unknown: "Unknown", rebuildable: "Review" };
 
-  const urlView = new URLSearchParams(location.search).get("view");
+  const params = new URLSearchParams(location.search);
+  const urlView = params.get("view");
   const st = {
     view: urlView || localStorage.getItem("sa.view") || "overview",
     drive: localStorage.getItem("sa.drive") || "",
     minBytes: Number(localStorage.getItem("sa.min") ?? 104857600),
-    sel: new Set(JSON.parse(localStorage.getItem("sa.sel") || "[]")),
-    state: null, cat: null, explore: { nodeId: null, detail: null }, pf: "all", jobTimer: null, cleaned: null,
+    sel: new Set(),                      // node ids in the current scan
+    selPaths: new Map(),                 // id -> path, so the selection can be re-resolved after a rescan
+    scanId: Number(localStorage.getItem("sa.scan") || 0),
+    state: null, cat: null, explore: { nodeId: null, path: params.get("path"), detail: null }, pf: "all", jobTimer: null, cleaned: null,
   };
-  const save = () => { localStorage.setItem("sa.view", st.view); localStorage.setItem("sa.drive", st.drive); localStorage.setItem("sa.min", st.minBytes); localStorage.setItem("sa.sel", JSON.stringify([...st.sel])); };
+  const save = () => { localStorage.setItem("sa.view", st.view); localStorage.setItem("sa.drive", st.drive); localStorage.setItem("sa.min", st.minBytes); localStorage.setItem("sa.scan", st.scanId); localStorage.setItem("sa.selpaths", JSON.stringify([...st.selPaths.values()])); };
 
   async function api(path, body) {
     const r = await fetch(path, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : undefined);
@@ -29,8 +32,29 @@
   function toast(msg, err) { const t = $("#toast"); t.textContent = msg; t.classList.toggle("err", !!err); t.classList.remove("hidden"); clearTimeout(toastT); toastT = setTimeout(() => t.classList.add("hidden"), err ? 8000 : 4000); }
 
   // ---------------------------------------------------------------- selection
-  function toggleSel(id, on) { id = Number(id); if (on === undefined) on = !st.sel.has(id); on ? st.sel.add(id) : st.sel.delete(id); st.cleaned = null; save(); updateCart(); }
+  // Items carry their path; node ids change on every rescan, paths do not.
+  const pathOf = new Map();
+  function remember(items) { for (const it of items) if (it && it.id != null && it.path) pathOf.set(Number(it.id), it.path); }
+  function toggleSel(id, on) {
+    id = Number(id); if (on === undefined) on = !st.sel.has(id);
+    if (on) { st.sel.add(id); if (pathOf.has(id)) st.selPaths.set(id, pathOf.get(id)); } else { st.sel.delete(id); st.selPaths.delete(id); }
+    st.cleaned = null; save(); updateCart();
+  }
   function updateCart() { const b = $("#nav-cart"); b.textContent = st.sel.size; b.classList.toggle("zero", !st.sel.size); }
+  async function resolveSelection(scanId) {
+    // Called when the scan id changes: turn stored paths back into ids for the new scan.
+    const paths = JSON.parse(localStorage.getItem("sa.selpaths") || "[]");
+    st.sel = new Set(); st.selPaths = new Map();
+    if (paths.length) {
+      try {
+        const r = await api("/api/resolve", { paths });
+        for (const [p, id] of Object.entries(r.ids)) { st.sel.add(id); st.selPaths.set(id, p); pathOf.set(id, p); }
+        const lost = paths.length - Object.keys(r.ids).length;
+        if (lost) toast(`New scan loaded: ${lost} selected item(s) no longer exist and were dropped.`);
+      } catch (e) { toast("Could not restore your selection: " + e.message, true); }
+    }
+    st.scanId = scanId; st.explore.nodeId = null; st.explore.detail = null; save(); updateCart();
+  }
 
   // ---------------------------------------------------------------- shared renderers
   const srcTag = (it) => it.source === "ai" ? `<span class="tag ai">AI · ${Math.round((it.confidence || 0) * 100)}% sure</span>` : it.source === "rule" ? `<span class="tag">Rule${it.rule_id ? ": " + esc(it.rule_id) : ""}</span>` : `<span class="tag">Not classified</span>`;
@@ -51,6 +75,7 @@
   }
   function bindRows(root) {
     $$("input.sel", root).forEach((cb) => cb.addEventListener("change", () => toggleSel(cb.dataset.id, cb.checked)));
+    $$(".row[data-id]", root).forEach((r) => { const p = r.querySelector(".path"); if (p) pathOf.set(Number(r.dataset.id), p.title || p.textContent); });
     $$(".open-detail", root).forEach((a) => a.addEventListener("click", () => openDetail(a.dataset.id)));
   }
 
@@ -82,13 +107,16 @@
     $("#nav-projects").textContent = Object.values(s.projects || {}).reduce((a, x) => a + x.n, 0) || "";
     const seg = $("#drive-seg");
     seg.innerHTML = `<button data-d="" class="${st.drive ? "" : "on"}">All drives</button>` + s.drives.map((d) => `<button data-d="${d.letter}" class="${st.drive === d.letter ? "on" : ""}">${d.letter}:</button>`).join("");
-    $$("button", seg).forEach((b) => b.addEventListener("click", () => { st.drive = b.dataset.d; save(); $$("button", seg).forEach((x) => x.classList.toggle("on", x === b)); render(); }));
+    $$("button", seg).forEach((b) => b.addEventListener("click", () => { st.drive = b.dataset.d; save(); $$("button", seg).forEach((x) => x.classList.toggle("on", x === b)); st.explore.nodeId = null; render(); }));
+    const sid = s.scan ? s.scan.id : 0;
+    if (sid !== st.scanId) await resolveSelection(sid);
     updateCart();
   }
 
   function render() {
     if (!st.state) return;
-    ({ overview: renderOverview, projects: renderProjects, categories: renderCategories, explore: renderExplore, tidy: renderTidy, cleanup: renderCleanup })[st.view]();
+    const fn = { overview: renderOverview, projects: renderProjects, categories: renderCategories, explore: renderExplore, tidy: renderTidy, cleanup: renderCleanup }[st.view];
+    fn().catch((e) => toast(e.message, true));
   }
 
   // ---------------------------------------------------------------- overview
@@ -103,6 +131,7 @@
       api("/api/items?" + q({ safety: "review", drive: drv(), min_bytes: st.minBytes, limit: 8 })),
       api("/api/items?" + q({ safety: "unknown", drive: drv(), min_bytes: st.minBytes, limit: 8 })),
     ]);
+    remember(wins); remember(review); remember(unknown);
     const safeN = Object.values(s.projects || {});
     const gitWarn = (s.projects?.warn?.n || 0), gitNone = (s.projects?.none?.n || 0);
     el.innerHTML = `
@@ -127,7 +156,7 @@
         </div>
       </div>`;
     bindRows(el);
-    $("#add-all-safe").onclick = async () => { const all = await api("/api/items?" + q({ safety: "safe", drive: drv(), limit: 5000 })); all.forEach((it) => st.sel.add(it.id)); st.cleaned = null; save(); updateCart(); toast(`Added ${all.length} safe items (${fmt(all.reduce((a, x) => a + x.excl_bytes, 0))})`); setView("cleanup"); };
+    $("#add-all-safe").onclick = async () => { const all = await api("/api/items?" + q({ safety: "safe", drive: drv(), limit: 5000 })); remember(all); all.forEach((it) => toggleSel(it.id, true)); toast(`Added ${all.length} safe items (${fmt(all.reduce((a, x) => a + x.excl_bytes, 0))})`); setView("cleanup"); };
     $("#go-cleanup").onclick = () => setView("cleanup");
     $$("[data-go]", el).forEach((b) => b.onclick = () => setView(b.dataset.go));
     $("#go-git").onclick = () => { st.pf = "git"; setView("projects"); };
@@ -138,6 +167,7 @@
   async function renderProjects() {
     const el = $("#view-projects");
     const ps = await api("/api/projects?" + q({ drive: drv() }));
+    ps.forEach((p) => remember(p.rebuildable));
     const stale = ps.filter((p) => p.stale), git = { ok: 0, warn: 0, none: 0 };
     ps.forEach((p) => { git[p.git_state] = (git[p.git_state] || 0) + 1; });
     const shown = ps.filter((p) => st.pf === "all" || (st.pf === "stale" ? p.stale : st.pf === "active" ? !p.stale : p.git_state !== "ok"));
@@ -153,7 +183,7 @@
       </div></div>
       <div class="muted">Projects are found by .git, package.json, pyproject.toml, *.sln, Cargo.toml, Unity ProjectSettings, *.uproject and build.gradle. "Last touched" is the newest source folder change or the last commit, ignoring build folders. Git status comes from git itself.</div>`;
     $$("#pf button").forEach((b) => b.onclick = () => { st.pf = b.dataset.f; renderProjects(); });
-    $("#sel-stale").onclick = () => { let n = 0; ps.forEach((p) => p.rebuildable.forEach((k) => { if (k.safety === "safe") { st.sel.add(k.id); n++; } })); st.cleaned = null; save(); updateCart(); toast(`Selected ${n} folders`); renderProjects(); };
+    $("#sel-stale").onclick = () => { let n = 0; ps.forEach((p) => p.rebuildable.forEach((k) => { if (k.safety === "safe") { toggleSel(k.id, true); n++; } })); toast(`Selected ${n} folders`); renderProjects(); };
     $$(".trow[data-p]", el).forEach((row) => row.querySelector(".exp").onclick = () => { const b = row.nextElementSibling; b.classList.toggle("hidden"); row.querySelector(".caret").classList.toggle("open"); });
     bindRows(el);
     $$("input.selk", el).forEach((cb) => cb.addEventListener("change", () => toggleSel(cb.dataset.id, cb.checked)));
@@ -185,10 +215,11 @@
     const names = st.state.categories || {};
     if (!st.cat || !cats.find((c) => c.category === st.cat)) st.cat = cats[0]?.category;
     const items = st.cat ? await api("/api/items?" + q({ category: st.cat, drive: drv(), min_bytes: st.minBytes, limit: 300 })) : [];
+    remember(items);
     el.innerHTML = `<div class="tiles">${cats.map((c) => { const w = (n) => (c.total ? 100 * n / c.total : 0).toFixed(1) + "%"; return `<button class="tile ${c.category === st.cat ? "on" : ""}" data-c="${c.category}"><span class="t"><b>${esc(names[c.category]?.name || c.category)}</b><b>${fmt(c.total)}</b></span><small>${esc(names[c.category]?.desc || "")}</small><span class="bar"><span style="width:${w(c.safe)};background:var(--safe)"></span><span style="width:${w(c.review)};background:var(--review)"></span><span style="width:${w(c.keep)};background:var(--keep)"></span><span style="width:${w(c.unknown)};background:var(--unknown)"></span></span><span class="sl">${c.safe ? fmt(c.safe) + " safe to free" : c.total ? "Nothing auto-safe" : "Empty"}</span></button>`; }).join("")}</div>
       <div class="list"><div class="hd"><h2>${esc(names[st.cat]?.name || st.cat || "")}</h2><div class="actions"><input class="search" id="cat-q" placeholder="filter by path…"><button class="btn small" id="cat-sel-safe">Select all safe</button><small>${items.length} items · ${fmt(items.reduce((a, x) => a + x.excl_bytes, 0))}</small></div></div><div id="cat-items">${items.map((it) => itemRow(it)).join("") || `<div class="empty">Nothing in this category on the selected drive above your size limit.</div>`}</div></div>`;
     $$(".tile", el).forEach((t) => t.onclick = () => { st.cat = t.dataset.c; renderCategories(); });
-    $("#cat-sel-safe").onclick = () => { let n = 0; items.forEach((it) => { if (it.safety === "safe") { st.sel.add(it.id); n++; } }); st.cleaned = null; save(); updateCart(); renderCategories(); toast(`Selected ${n} items`); };
+    $("#cat-sel-safe").onclick = () => { let n = 0; items.forEach((it) => { if (it.safety === "safe") { toggleSel(it.id, true); n++; } }); renderCategories(); toast(`Selected ${n} items`); };
     $("#cat-q").oninput = (e) => { const v = e.target.value.toLowerCase(); $("#cat-items").innerHTML = items.filter((it) => it.path.toLowerCase().includes(v)).map((it) => itemRow(it)).join(""); bindRows($("#cat-items")); };
     bindRows(el);
   }
@@ -221,24 +252,38 @@
     }
     return out;
   }
+  const goExplore = (nodeId) => { st.explore.nodeId = nodeId; st.explore.path = null; st.explore.detail = null; renderExplore().catch((e) => toast(e.message, true)); };
   async function renderExplore() {
     const el = $("#view-explore");
     const ex = st.explore;
-    const t = await api("/api/tree?" + q({ node_id: ex.nodeId, drive: ex.nodeId ? null : (st.drive || st.state.drives[0]?.letter) }));
-    const kids = t.children.filter((k) => k.allocated > 0).map((k) => ({ ...k, value: k.allocated }));
-    if (t.rest.count) kids.push({ id: null, name: `${t.rest.count} smaller items`, allocated: t.rest.allocated, value: t.rest.allocated, safety: "rest", is_dir: 0 });
-    el.innerHTML = `<div class="crumbs">${t.crumbs.map((c, i) => `<a data-id="${c.id}">${esc(c.name)}</a>${i < t.crumbs.length - 1 ? " ›" : ""}`).join(" ")} <span class="muted">· ${fmt(t.node.allocated)}</span>
+    const t = await api("/api/tree?" + q({ node_id: ex.nodeId, path: ex.nodeId ? null : ex.path, drive: (ex.nodeId || ex.path) ? null : (st.drive || st.state.drives[0]?.letter) }));
+    ex.nodeId = t.node.id; ex.path = null;
+    const toItems = (children, rest) => { const ks = children.filter((k) => k.allocated > 0).map((k) => ({ ...k, value: k.allocated })); if (rest && rest.count) ks.push({ id: null, name: `${rest.count} smaller items`, allocated: rest.allocated, value: rest.allocated, safety: "rest", is_dir: 0 }); return ks.sort((a, b) => b.value - a.value); };
+    remember(t.children); t.children.forEach((k) => remember(k.children || []));
+    const up = t.crumbs.length > 1 ? t.crumbs[t.crumbs.length - 2] : null;
+    el.innerHTML = `<div class="crumbs">${up ? `<button class="btn small" id="map-up" title="Up to ${esc(up.name)}">↑ Up</button>` : ""}${t.crumbs.map((c, i) => `<a data-id="${c.id}" ${i === t.crumbs.length - 1 ? 'class="cur"' : ""}>${esc(c.name)}</a>${i < t.crumbs.length - 1 ? " ›" : ""}`).join(" ")} <span class="muted">· ${fmt(t.node.allocated)}</span>
         <span style="margin-left:auto" class="legend"><span><i style="background:var(--safe-fill);border:1px solid var(--safe)"></i>Safe</span><span><i style="background:var(--review-fill);border:1px solid var(--review)"></i>Review</span><span><i style="background:var(--keep-fill);border:1px solid var(--keep)"></i>Keep</span><span><i style="background:var(--unknown-fill);border:1px solid var(--unknown)"></i>Unknown</span><span><i style="background:var(--none-fill);border:1px solid #353B46"></i>Look inside</span></span></div>
-      <div class="map-wrap"><div class="map" id="map"></div><aside class="aside" id="map-aside"><div class="muted">Click a block for details. Double-click a folder to open it.</div></aside></div>`;
-    $$(".crumbs a", el).forEach((a) => a.onclick = () => { ex.nodeId = Number(a.dataset.id); ex.detail = null; renderExplore(); });
+      <div class="map-wrap"><div class="map" id="map"></div><aside class="aside" id="map-aside"><div class="muted">Click a block for details. Double-click a folder (or use Open folder) to go inside; ↑ Up or the breadcrumbs go back.</div></aside></div>`;
+    $$(".crumbs a", el).forEach((a) => a.onclick = () => goExplore(Number(a.dataset.id)));
+    const upBtn = $("#map-up"); if (upBtn) upBtn.onclick = () => goExplore(up.id);
     const map = $("#map"); const W = map.clientWidth, H = map.clientHeight;
-    const rects = squarify(kids.sort((a, b) => b.value - a.value), 0, 0, W, H);
-    map.innerHTML = rects.map((r) => `<button class="blk ${r.safety === "none" ? (r.is_dir ? "none" : "none") : r.safety} ${r.id === ex.detail ? "sel" : ""}" data-id="${r.id ?? ""}" data-dir="${r.is_dir ? 1 : 0}" style="left:${r.x + 1}px;top:${r.y + 1}px;width:${Math.max(r.w - 2, 1)}px;height:${Math.max(r.h - 2, 1)}px" title="${esc(r.name)} · ${fmt(r.allocated)}">${r.w > 60 && r.h > 28 ? `<b>${esc(r.name)}</b><small>${fmt(r.allocated)}</small>` : ""}</button>`).join("");
-    $$(".blk", map).forEach((b) => {
-      b.onclick = () => { if (!b.dataset.id) return; ex.detail = Number(b.dataset.id); $$(".blk", map).forEach((x) => x.classList.toggle("sel", x === b)); showAside(ex.detail); };
-      b.ondblclick = () => { if (b.dataset.id && b.dataset.dir === "1") { ex.nodeId = Number(b.dataset.id); ex.detail = null; renderExplore(); } };
+    const HEAD = 20, PAD = 3;
+    const blk = (r, extraCls = "") => `<button class="blk ${r.safety} ${extraCls} ${r.id === ex.detail ? "sel" : ""}" data-id="${r.id ?? ""}" data-dir="${r.is_dir ? 1 : 0}" style="left:${r.x + 1}px;top:${r.y + 1}px;width:${Math.max(r.w - 2, 1)}px;height:${Math.max(r.h - 2, 1)}px" title="${esc(r.name)} · ${fmt(r.allocated)}">${r.w > 56 && r.h > 26 ? `<b>${esc(r.name)}</b>${r.h > 40 ? `<small>${fmt(r.allocated)}</small>` : ""}` : ""}</button>`;
+    let html = "";
+    for (const r of squarify(toItems(t.children, t.rest), 0, 0, W, H)) {
+      const inner = r.children ? toItems(r.children, r.rest) : [];
+      if (inner.length && r.w > 110 && r.h > 70) {
+        // parent drawn as a frame with a header strip; its children squarified inside
+        html += `<div class="blk frame ${r.safety} ${r.id === ex.detail ? "sel" : ""}" style="left:${r.x + 1}px;top:${r.y + 1}px;width:${Math.max(r.w - 2, 1)}px;height:${Math.max(r.h - 2, 1)}px"><button class="hdr" data-id="${r.id}" data-dir="1" title="${esc(r.name)} · ${fmt(r.allocated)}"><b>${esc(r.name)}</b> <small>${fmt(r.allocated)}</small></button></div>`;
+        for (const c of squarify(inner, r.x + PAD, r.y + HEAD, Math.max(r.w - 2 * PAD, 1), Math.max(r.h - HEAD - PAD, 1))) html += blk(c, "inner");
+      } else html += blk(r);
+    }
+    map.innerHTML = html;
+    $$(".blk[data-id], .hdr", map).forEach((b) => {
+      b.onclick = () => { if (!b.dataset.id) return; ex.detail = Number(b.dataset.id); $$(".blk, .hdr", map).forEach((x) => x.classList.toggle("sel", x === b)); showAside(ex.detail).catch((e) => toast(e.message, true)); };
+      b.ondblclick = () => { if (b.dataset.id && b.dataset.dir === "1") goExplore(Number(b.dataset.id)); };
     });
-    if (ex.detail) showAside(ex.detail);
+    if (ex.detail) showAside(ex.detail).catch(() => { ex.detail = null; });
   }
   async function showAside(id) {
     const d = await api("/api/node/" + id);
@@ -252,9 +297,10 @@
       ${c.action ? `<div><div class="k">Recommended action</div><div class="v">${esc(c.action)}</div></div>` : ""}
       ${d.own ? `<div><div class="k">Decided by</div><div class="v">${srcTag(d.own)}</div></div>` : ""}
       <div class="actions" style="margin-top:auto">${d.protected ? `<span class="muted">🔒 ${esc(d.protected)}</span>` : `<button class="btn safe small" id="as-sel">${st.sel.has(d.id) ? "Remove from cleanup" : "Add to cleanup"}</button>`}${d.is_dir ? `<button class="btn small" id="as-open">Open folder</button>` : ""}<button class="btn small" id="as-more">Details</button></div>`;
+    pathOf.set(d.id, d.path);
     const s = $("#as-sel"); if (s) s.onclick = () => { toggleSel(d.id); showAside(id); };
-    const o = $("#as-open"); if (o) o.onclick = () => { st.explore.nodeId = d.id; st.explore.detail = null; renderExplore(); };
-    $("#as-more").onclick = () => openDetail(d.id);
+    const o = $("#as-open"); if (o) o.onclick = () => goExplore(d.id);
+    $("#as-more").onclick = () => openDetail(d.id).catch((e) => toast(e.message, true));
   }
 
   // ---------------------------------------------------------------- tidy up (small items grouped)
@@ -268,7 +314,8 @@
     const gs = Object.entries(groups).sort((a, b) => b[1].reduce((x, y) => x + y.excl_bytes, 0) - a[1].reduce((x, y) => x + y.excl_bytes, 0));
     el.innerHTML = `<div class="card"><h2>Safe items under ${fmt(st.minBytes) || "the limit"}</h2><div class="muted">${small.length} items · ${fmt(small.reduce((a, x) => a + x.excl_bytes, 0))} in total. Individually too small to list on the Overview, together worth cleaning. ${st.minBytes ? "" : "Set a size limit above to see grouping."}</div></div>
       ${gs.map(([cat, its]) => `<div class="list"><div class="hd"><h2>${esc(names[cat]?.name || cat)}</h2><div class="actions"><small>${its.length} items · ${fmt(its.reduce((a, x) => a + x.excl_bytes, 0))}</small><button class="btn small safe" data-cat="${cat}">Select all</button><button class="btn small" data-exp="${cat}">Show list</button></div></div><div class="hidden" id="tidy-${cat}">${its.map((it) => itemRow(it)).join("")}</div></div>`).join("") || `<div class="empty">No small safe items. Lower the limit or rescan.</div>`}`;
-    $$("[data-cat]", el).forEach((b) => b.onclick = () => { groups[b.dataset.cat].forEach((it) => st.sel.add(it.id)); st.cleaned = null; save(); updateCart(); toast(`Selected ${groups[b.dataset.cat].length} items`); renderTidy(); });
+    remember(all);
+    $$("[data-cat]", el).forEach((b) => b.onclick = () => { groups[b.dataset.cat].forEach((it) => toggleSel(it.id, true)); toast(`Selected ${groups[b.dataset.cat].length} items`); renderTidy(); });
     $$("[data-exp]", el).forEach((b) => b.onclick = () => $("#tidy-" + b.dataset.exp).classList.toggle("hidden"));
     bindRows(el);
   }
@@ -290,7 +337,7 @@
           <label class="muted" style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="dry" checked> Dry run first (show exactly what will happen)</label>
           <button class="btn safe" id="run" ${ok.length ? "" : "disabled"}>Clean ${ok.length} items</button><div id="run-out"></div></div>
         <div class="card"><h2>History</h2>${log.map((l) => `<div class="muted"><span class="${l.result}">${l.result}</span> ${l.ts.replace("T", " ").slice(0, 16)} · ${fmt(l.bytes)} · ${esc(l.path)}${l.detail ? ` <span style="color:#6c7480">— ${esc(l.detail).slice(0, 120)}</span>` : ""}</div>`).join("") || `<div class="muted">No cleanups yet.</div>`}</div></div></div>`;
-    $("#clear-sel").onclick = () => { st.sel.clear(); save(); updateCart(); renderCleanup(); };
+    $("#clear-sel").onclick = () => { st.sel.clear(); st.selPaths.clear(); save(); updateCart(); renderCleanup(); };
     $$("[data-rm]", el).forEach((b) => b.onclick = () => { toggleSel(b.dataset.rm, false); renderCleanup(); });
     $("#run").onclick = async () => {
       const dry = $("#dry").checked;
@@ -300,7 +347,7 @@
         const r = await api("/api/cleanup/run", { node_ids: ids, dry_run: dry });
         const lines = r.actions.map((a) => `<div class="muted"><span class="${a.result === "dry-run" ? "" : a.result}">${a.result}</span> ${esc(a.path)} — ${esc(a.detail || "")}</div>`).join("");
         if (dry) { $("#run-out").innerHTML = `<div class="gitbox na">Dry run: nothing was changed.</div>${lines}`; $("#run").disabled = false; }
-        else { st.cleaned = `Cleaned ${r.actions.filter((a) => a.result === "ok").length} items and freed ${fmt(r.freed)}. ${r.actions.filter((a) => a.result === "failed").length ? "Some failed: see below." : "Rescan to update the numbers."}`; r.actions.forEach((a) => { if (a.result === "ok") st.sel.delete(a.node_id); }); save(); updateCart(); await renderCleanup(); $("#run-out").innerHTML = lines; }
+        else { st.cleaned = `Cleaned ${r.actions.filter((a) => a.result === "ok").length} items and freed ${fmt(r.freed)}. ${r.actions.filter((a) => a.result === "failed").length ? "Some failed: see below." : "Rescan to update the numbers."}`; r.actions.forEach((a) => { if (a.result === "ok") toggleSel(a.node_id, false); }); await renderCleanup(); $("#run-out").innerHTML = lines; }
       } catch (e) { toast(e.message, true); $("#run").disabled = false; }
     };
   }
@@ -323,7 +370,8 @@
     $("#dt-close").onclick = () => dr.classList.add("hidden");
     const s = $("#dt-sel"); if (s) s.onclick = () => { toggleSel(d.id); openDetail(id); render(); };
     $("#dt-exp").onclick = () => api("/api/open", { path: d.path }).catch((e) => toast(e.message, true));
-    $("#dt-map").onclick = () => { st.explore.nodeId = d.parent_id; st.explore.detail = d.id; dr.classList.add("hidden"); setView("explore"); };
+    pathOf.set(d.id, d.path);
+    $("#dt-map").onclick = () => { st.explore.nodeId = d.parent_id; st.explore.path = null; st.explore.detail = d.id; dr.classList.add("hidden"); setView("explore"); };
     const r = $("#dt-rule"); if (r) r.onclick = async () => { try { await api("/api/rules/accept", { rule: ai.suggested_rule }); toast("Rule saved to rules/user.yaml. Re-classify to apply."); } catch (e) { toast(e.message, true); } };
     const ab = $("#dt-ai"); if (ab) ab.onclick = async () => { if (!st.state.ai_enabled) await setAi(true); dr.classList.add("hidden"); runAi({ node_ids: [d.id] }); };
   }
